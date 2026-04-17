@@ -15,15 +15,20 @@ class CartController extends Controller
         $items = $request->user()
             ->cartItems()
             ->with('dish.restaurant')
-            ->latest()
+            ->orderByDesc('created_at')
             ->get();
 
-        $subtotal = $items->sum(fn (Cart $item) => (float) $item->price * $item->quantity);
-        $deliveryFee = $items
-            ->map(fn (Cart $item) => $item->dish?->restaurant)
+        $subtotal = 0.0;
+        foreach ($items as $item) {
+            $subtotal += (float) $item->price * $item->quantity;
+        }
+
+        $restaurants = $items
+            ->pluck('dish.restaurant')
             ->filter()
-            ->unique('id')
-            ->sum(fn ($restaurant) => (float) $restaurant->delivery_fee);
+            ->unique('id');
+
+        $deliveryFee = (float) $restaurants->sum('delivery_fee');
 
         return view('cart.index', [
             'items' => $items,
@@ -49,7 +54,12 @@ class CartController extends Controller
         ]);
 
         $item->price = $dish->price;
-        $item->quantity = $item->exists ? min(99, $item->quantity + $quantity) : $quantity;
+        if ($item->exists) {
+            $item->quantity = min(99, $item->quantity + $quantity);
+        } else {
+            $item->quantity = $quantity;
+        }
+
         $item->save();
 
         return back()->with('success', 'Блюдо добавлено в корзину.');
@@ -81,6 +91,8 @@ class CartController extends Controller
 
     private function assertOwnership(Request $request, Cart $cart): void
     {
-        abort_unless($cart->user_id === $request->user()->id, 403);
+        if ($cart->user_id !== $request->user()->id) {
+            abort(403);
+        }
     }
 }
