@@ -1,0 +1,13 @@
+<svg width="640" height="320" viewBox="0 0 640 320" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="magnitBg" x1="0" y1="0" x2="640" y2="320" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#D62828"/>
+      <stop offset="1" stop-color="#B10E1C"/>
+    </linearGradient>
+  </defs>
+  <rect width="640" height="320" rx="36" fill="url(#magnitBg)"/>
+  <circle cx="560" cy="84" r="88" fill="white" fill-opacity="0.1"/>
+  <circle cx="98" cy="292" r="118" fill="white" fill-opacity="0.08"/>
+  <text x="54" y="154" fill="white" font-family="Arial, sans-serif" font-size="72" font-weight="700">МАГНИТ</text>
+  <text x="54" y="206" fill="white" fill-opacity="0.88" font-family="Arial, sans-serif" font-size="28" font-weight="500">У дома каждый день</text>
+</svg>

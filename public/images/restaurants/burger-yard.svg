@@ -1,0 +1,13 @@
+<svg width="640" height="320" viewBox="0 0 640 320" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="burgerBg" x1="0" y1="0" x2="640" y2="320" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#8A4B2A"/>
+      <stop offset="1" stop-color="#6A3219"/>
+    </linearGradient>
+  </defs>
+  <rect width="640" height="320" rx="36" fill="url(#burgerBg)"/>
+  <circle cx="560" cy="82" r="86" fill="white" fill-opacity="0.11"/>
+  <circle cx="88" cy="292" r="110" fill="white" fill-opacity="0.08"/>
+  <text x="52" y="150" fill="white" font-family="Arial, sans-serif" font-size="64" font-weight="700">БУРГЕРНАЯ ДВОР</text>
+  <text x="52" y="202" fill="white" fill-opacity="0.88" font-family="Arial, sans-serif" font-size="28" font-weight="500">Бургеры и закуски</text>
+</svg>

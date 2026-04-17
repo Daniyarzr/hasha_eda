@@ -1,0 +1,15 @@
+{
+  "name": "Наша Еда",
+  "short_name": "Наша Еда",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#f4f5f7",
+  "theme_color": "#1451ac",
+  "icons": [
+    {
+      "src": "/favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml"
+    }
+  ]
+}
