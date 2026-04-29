@@ -1,0 +1,2674 @@
+﻿
+
+===== app/Http/Controllers/HomeController.php =====
+0001: <?php
+0002: 
+0003: namespace App\Http\Controllers;
+0004: 
+0005: use App\Models\Dish;
+0006: use App\Models\Restaurant;
+0007: use Illuminate\Support\Facades\Schema;
+0008: use Illuminate\View\View;
+0009: 
+0010: class HomeController extends Controller
+0011: {
+0012:     public function index(): View
+0013:     {
+0014:         if (! $this->catalogTablesReady()) {
+0015:             return view('home', [
+0016:                 'restaurants' => collect(),
+0017:                 'featuredDishes' => collect(),
+0018:                 'stats' => [
+0019:                     'restaurants' => 0,
+0020:                     'dishes' => 0,
+0021:                     'avgDelivery' => 0,
+0022:                 ],
+0023:             ]);
+0024:         }
+0025: 
+0026:         $restaurants = Restaurant::query()
+0027:             ->active()
+0028:             ->withCount([
+0029:                 'dishes as available_dishes_count' => fn ($query) => $query->where('is_available', true),
+0030:                 'reviews',
+0031:             ])
+0032:             ->orderByDesc('rating')
+0033:             ->take(6)
+0034:             ->get();
+0035: 
+0036:         $featuredDishes = Dish::query()
+0037:             ->available()
+0038:             ->with('restaurant')
+0039:             ->orderByDesc('id')
+0040:             ->take(8)
+0041:             ->get();
+0042: 
+0043:         $stats = [
+0044:             'restaurants' => Restaurant::query()->where('is_active', true)->count(),
+0045:             'dishes' => Dish::query()->where('is_available', true)->count(),
+0046:             'avgDelivery' => (int) round(Restaurant::query()->where('is_active', true)->avg('delivery_time') ?? 0),
+0047:         ];
+0048: 
+0049:         return view('home', [
+0050:             'restaurants' => $restaurants,
+0051:             'featuredDishes' => $featuredDishes,
+0052:             'stats' => $stats,
+0053:         ]);
+0054:     }
+0055: 
+0056:     private function catalogTablesReady(): bool
+0057:     {
+0058:         return Schema::hasTable('restaurants')
+0059:             && Schema::hasTable('dishes');
+0060:     }
+0061: }
+
+===== app/Http/Controllers/CatalogController.php =====
+0001: <?php
+0002: 
+0003: namespace App\Http\Controllers;
+0004: 
+0005: use App\Models\Category;
+0006: use App\Models\Dish;
+0007: use App\Models\Restaurant;
+0008: use Illuminate\Http\Request;
+0009: use Illuminate\View\View;
+0010: 
+0011: class CatalogController extends Controller
+0012: {
+0013:     public function index(Request $request): View
+0014:     {
+0015:         $search = trim((string) $request->query('q', ''));
+0016:         $restaurantId = $request->integer('restaurant_id');
+0017:         $categoryId = $request->integer('category_id');
+0018:         $priceFrom = $request->query('price_from');
+0019:         $priceTo = $request->query('price_to');
+0020:         $sort = (string) $request->query('sort', 'popular');
+0021: 
+0022:         $restaurants = Restaurant::query()
+0023:             ->active()
+0024:             ->orderBy('name')
+0025:             ->get();
+0026: 
+0027:         $categories = Category::query()
+0028:             ->when($restaurantId, fn ($query) => $query->where('restaurant_id', $restaurantId))
+0029:             ->orderBy('name')
+0030:             ->get();
+0031: 
+0032:         $dishesQuery = Dish::query()
+0033:             ->available()
+0034:             ->with(['restaurant', 'category'])
+0035:             ->when($restaurantId, fn ($query) => $query->where('restaurant_id', $restaurantId))
+0036:             ->when($categoryId, fn ($query) => $query->where('category_id', $categoryId))
+0037:             ->when($search !== '', function ($query) use ($search) {
+0038:                 $query->where(function ($searchQuery) use ($search): void {
+0039:                     $searchQuery
+0040:                         ->where('name', 'like', '%' . $search . '%')
+0041:                         ->orWhere('description', 'like', '%' . $search . '%')
+0042:                         ->orWhereHas('restaurant', fn ($restaurantQuery) => $restaurantQuery->where('name', 'like', '%' . $search . '%'));
+0043:                 });
+0044:             })
+0045:             ->when(is_numeric($priceFrom), fn ($query) => $query->where('price', '>=', (float) $priceFrom))
+0046:             ->when(is_numeric($priceTo), fn ($query) => $query->where('price', '<=', (float) $priceTo));
+0047: 
+0048:         if ($sort === 'price_asc') {
+0049:             $dishesQuery->orderBy('price');
+0050:         } elseif ($sort === 'price_desc') {
+0051:             $dishesQuery->orderByDesc('price');
+0052:         } elseif ($sort === 'new') {
+0053:             $dishesQuery->orderByDesc('id');
+0054:         } else {
+0055:             $dishesQuery->orderByDesc('id');
+0056:         }
+0057: 
+0058:         $dishes = $dishesQuery->get();
+0059: 
+0060:         return view('catalog.index', [
+0061:             'dishes' => $dishes,
+0062:             'restaurants' => $restaurants,
+0063:             'categories' => $categories,
+0064:             'filters' => [
+0065:                 'q' => $search,
+0066:                 'restaurant_id' => $restaurantId ?: null,
+0067:                 'category_id' => $categoryId ?: null,
+0068:                 'price_from' => $priceFrom,
+0069:                 'price_to' => $priceTo,
+0070:                 'sort' => $sort,
+0071:             ],
+0072:         ]);
+0073:     }
+0074: }
+
+===== app/Http/Controllers/CartController.php =====
+0001: <?php
+0002: 
+0003: namespace App\Http\Controllers;
+0004: 
+0005: use App\Models\Cart;
+0006: use App\Models\Dish;
+0007: use Illuminate\Http\RedirectResponse;
+0008: use Illuminate\Http\Request;
+0009: use Illuminate\View\View;
+0010: 
+0011: class CartController extends Controller
+0012: {
+0013:     public function index(Request $request): View
+0014:     {
+0015:         $items = $request->user()
+0016:             ->cartItems()
+0017:             ->with('dish.restaurant')
+0018:             ->orderByDesc('created_at')
+0019:             ->get();
+0020: 
+0021:         $subtotal = 0.0;
+0022:         foreach ($items as $item) {
+0023:             $subtotal += (float) $item->price * $item->quantity;
+0024:         }
+0025: 
+0026:         $restaurants = $items
+0027:             ->pluck('dish.restaurant')
+0028:             ->filter()
+0029:             ->unique('id');
+0030: 
+0031:         $deliveryFee = (float) $restaurants->sum('delivery_fee');
+0032: 
+0033:         return view('cart.index', [
+0034:             'items' => $items,
+0035:             'subtotal' => $subtotal,
+0036:             'deliveryFee' => $deliveryFee,
+0037:             'total' => $subtotal + $deliveryFee,
+0038:         ]);
+0039:     }
+0040: 
+0041:     public function store(Request $request): RedirectResponse
+0042:     {
+0043:         $validated = $request->validate([
+0044:             'dish_id' => ['required', 'integer', 'exists:dishes,id'],
+0045:             'quantity' => ['nullable', 'integer', 'min:1', 'max:20'],
+0046:         ]);
+0047: 
+0048:         $dish = Dish::query()->where('is_available', true)->findOrFail($validated['dish_id']);
+0049:         $quantity = $validated['quantity'] ?? 1;
+0050: 
+0051:         $item = Cart::query()->firstOrNew([
+0052:             'user_id' => $request->user()->id,
+0053:             'dish_id' => $dish->id,
+0054:         ]);
+0055: 
+0056:         $item->price = $dish->price;
+0057:         if ($item->exists) {
+0058:             $item->quantity = min(99, $item->quantity + $quantity);
+0059:         } else {
+0060:             $item->quantity = $quantity;
+0061:         }
+0062: 
+0063:         $item->save();
+0064: 
+0065:         return back()->with('success', 'Блюдо добавлено в корзину.');
+0066:     }
+0067: 
+0068:     public function update(Request $request, Cart $cart): RedirectResponse
+0069:     {
+0070:         $this->assertOwnership($request, $cart);
+0071: 
+0072:         $validated = $request->validate([
+0073:             'quantity' => ['required', 'integer', 'min:1', 'max:99'],
+0074:         ]);
+0075: 
+0076:         $cart->update([
+0077:             'quantity' => $validated['quantity'],
+0078:             'price' => $cart->dish?->price ?? $cart->price,
+0079:         ]);
+0080: 
+0081:         return back()->with('success', 'Корзина обновлена.');
+0082:     }
+0083: 
+0084:     public function destroy(Request $request, Cart $cart): RedirectResponse
+0085:     {
+0086:         $this->assertOwnership($request, $cart);
+0087:         $cart->delete();
+0088: 
+0089:         return back()->with('success', 'Блюдо удалено из корзины.');
+0090:     }
+0091: 
+0092:     private function assertOwnership(Request $request, Cart $cart): void
+0093:     {
+0094:         if ($cart->user_id !== $request->user()->id) {
+0095:             abort(403);
+0096:         }
+0097:     }
+0098: }
+
+===== app/Http/Controllers/OrderController.php =====
+0001: <?php
+0002: 
+0003: namespace App\Http\Controllers;
+0004: 
+0005: use App\Models\Cart;
+0006: use App\Models\Order;
+0007: use App\Models\User;
+0008: use Illuminate\Database\Eloquent\Collection;
+0009: use Illuminate\Http\RedirectResponse;
+0010: use Illuminate\Http\Request;
+0011: use Illuminate\Support\Facades\DB;
+0012: 
+0013: class OrderController extends Controller
+0014: {
+0015:     public function store(Request $request): RedirectResponse
+0016:     {
+0017:         $validated = $this->validateCheckoutData($request);
+0018:         $user = $request->user();
+0019:         $cartItems = $user->cartItems()->with('dish.restaurant')->get();
+0020: 
+0021:         if ($cartItems->isEmpty()) {
+0022:             return redirect()->route('cart.index')->with('error', 'Корзина пуста.');
+0023:         }
+0024: 
+0025:         $itemsByRestaurant = $this->groupItemsByRestaurant($cartItems);
+0026: 
+0027:         if ($itemsByRestaurant->isEmpty()) {
+0028:             return redirect()->route('cart.index')->with('error', 'Не удалось оформить заказ: блюда недоступны.');
+0029:         }
+0030: 
+0031:         DB::transaction(function () use ($user, $itemsByRestaurant, $validated, $cartItems): void {
+0032:             
+0033:             $this->createOrdersFromCart($user, $itemsByRestaurant, $validated);
+0034: 
+0035:           
+0036:             $this->updateUserContacts($user, $validated);
+0037: 
+0038:            
+0039:             $this->clearCart($cartItems);
+0040:         });
+0041: 
+0042:         return redirect()->route('account.index')->with('success', 'Заказ успешно оформлен.');
+0043:     }
+0044: 
+0045:     private function validateCheckoutData(Request $request): array
+0046:     {
+0047:         return $request->validate([
+0048:             'delivery_address' => ['required', 'string', 'max:255'],
+0049:             'customer_phone' => ['required', 'string', 'max:50'],
+0050:             'comment' => ['nullable', 'string', 'max:1000'],
+0051:         ]);
+0052:     }
+0053: 
+0054:     private function groupItemsByRestaurant(Collection $cartItems): Collection
+0055:     {
+0056:         return $cartItems
+0057:             ->filter(fn (Cart $item) => $item->dish && $item->dish->restaurant)
+0058:             ->groupBy(fn (Cart $item) => $item->dish->restaurant->id);
+0059:     }
+0060: 
+0061:     private function createOrdersFromCart(User $user, Collection $itemsByRestaurant, array $validated): void
+0062:     {
+0063:         foreach ($itemsByRestaurant as $restaurantId => $restaurantItems) {
+0064:             $restaurant = $restaurantItems->first()->dish->restaurant;
+0065:             $deliveryFee = (float) $restaurant->delivery_fee;
+0066: 
+0067:             $subtotal = 0.0;
+0068:             foreach ($restaurantItems as $item) {
+0069:                 $subtotal += (float) $item->price * $item->quantity;
+0070:             }
+0071: 
+0072:             $order = $this->createOrder(
+0073:                 $user,
+0074:                 (int) $restaurantId,
+0075:                 $validated,
+0076:                 $subtotal,
+0077:                 $deliveryFee
+0078:             );
+0079: 
+0080:             $this->createOrderItems($order, $restaurantItems);
+0081:         }
+0082:     }
+0083: 
+0084:     private function createOrder(
+0085:         User $user,
+0086:         int $restaurantId,
+0087:         array $validated,
+0088:         float $subtotal,
+0089:         float $deliveryFee
+0090:     ): Order {
+0091:         return $user->orders()->create([
+0092:             'restaurant_id' => $restaurantId,
+0093:             'status' => 'new',
+0094:             'delivery_address' => $validated['delivery_address'],
+0095:             'customer_phone' => $validated['customer_phone'],
+0096:             'comment' => $validated['comment'] ?? null,
+0097:             'total_amount' => $subtotal + $deliveryFee,
+0098:             'delivery_fee' => $deliveryFee,
+0099:             'ordered_at' => now(),
+0100:         ]);
+0101:     }
+0102: 
+0103:     private function createOrderItems(Order $order, Collection $restaurantItems): void
+0104:     {
+0105:         foreach ($restaurantItems as $item) {
+0106:             $order->items()->create([
+0107:                 'dish_id' => $item->dish_id,
+0108:                 'dish_name' => $item->dish?->name ?? 'Неизвестное блюдо',
+0109:                 'quantity' => $item->quantity,
+0110:                 'price' => $item->price,
+0111:             ]);
+0112:         }
+0113:     }
+0114: 
+0115:     private function updateUserContacts(User $user, array $validated): void
+0116:     {
+0117:         $user->update([
+0118:             'phone' => $validated['customer_phone'],
+0119:             'default_address' => $validated['delivery_address'],
+0120:         ]);
+0121:     }
+0122: 
+0123:     private function clearCart(Collection $cartItems): void
+0124:     {
+0125:         Cart::query()->whereIn('id', $cartItems->pluck('id'))->delete();
+0126:     }
+0127: }
+
+===== app/Http/Controllers/AccountController.php =====
+0001: <?php
+0002: 
+0003: namespace App\Http\Controllers;
+0004: 
+0005: use Illuminate\Http\RedirectResponse;
+0006: use Illuminate\Http\Request;
+0007: use Illuminate\View\View;
+0008: 
+0009: class AccountController extends Controller
+0010: {
+0011:     public function index(Request $request): View
+0012:     {
+0013:         $user = $request->user()->load([
+0014:             'orders.restaurant',
+0015:             'orders.items',
+0016:         ]);
+0017: 
+0018:         $orders = $user->orders()
+0019:             ->with(['restaurant', 'items'])
+0020:             ->latest()
+0021:             ->get();
+0022: 
+0023:         $totalSpent = $orders->sum('total_amount');
+0024: 
+0025:         return view('account.index', [
+0026:             'user' => $user,
+0027:             'orders' => $orders,
+0028:             'totalSpent' => $totalSpent,
+0029:         ]);
+0030:     }
+0031: 
+0032:     public function update(Request $request): RedirectResponse
+0033:     {
+0034:         $validated = $request->validate([
+0035:             'name' => ['required', 'string', 'max:255'],
+0036:             'phone' => ['nullable', 'string', 'max:50'],
+0037:             'default_address' => ['nullable', 'string', 'max:255'],
+0038:         ]);
+0039: 
+0040:         $request->user()->update($validated);
+0041: 
+0042:         return back()->with('success', 'Профиль обновлён.');
+0043:     }
+0044: }
+
+===== app/Http/Controllers/RestaurantController.php =====
+0001: <?php
+0002: 
+0003: namespace App\Http\Controllers;
+0004: 
+0005: use App\Models\Restaurant;
+0006: use Illuminate\Support\Facades\Schema;
+0007: use Illuminate\View\View;
+0008: 
+0009: class RestaurantController extends Controller
+0010: {
+0011:     public function index(): View
+0012:     {
+0013:         if (! $this->catalogTablesReady()) {
+0014:             return view('restaurants.index', ['restaurants' => collect()]);
+0015:         }
+0016: 
+0017:         $restaurants = Restaurant::query()
+0018:             ->active()
+0019:             ->withCount([
+0020:                 'dishes as available_dishes_count' => fn ($query) => $query->where('is_available', true),
+0021:                 'reviews',
+0022:             ])
+0023:             ->orderByDesc('rating')
+0024:             ->orderBy('delivery_time')
+0025:             ->get();
+0026: 
+0027:         return view('restaurants.index', ['restaurants' => $restaurants]);
+0028:     }
+0029: 
+0030:     public function show(Restaurant $restaurant): View
+0031:     {
+0032:         if (! $this->catalogTablesReady()) {
+0033:             abort(404);
+0034:         }
+0035: 
+0036:         $restaurant->load([
+0037:             'categories' => fn ($query) => $query->orderBy('sort_order')->orderBy('name'),
+0038:             'dishes' => fn ($query) => $query->available()->orderBy('name'),
+0039:             'reviews' => fn ($query) => $query->latest(),
+0040:             'reviews.user',
+0041:         ]);
+0042: 
+0043:         return view('restaurants.show', ['restaurant' => $restaurant]);
+0044:     }
+0045: 
+0046:     private function catalogTablesReady(): bool
+0047:     {
+0048:         return Schema::hasTable('restaurants')
+0049:             && Schema::hasTable('categories')
+0050:             && Schema::hasTable('dishes')
+0051:             && Schema::hasTable('reviews');
+0052:     }
+0053: }
+
+===== app/Http/Middleware/EnsureAdmin.php =====
+0001: <?php
+0002: 
+0003: namespace App\Http\Middleware;
+0004: 
+0005: use Closure;
+0006: use Illuminate\Http\Request;
+0007: use Symfony\Component\HttpFoundation\Response;
+0008: 
+0009: class EnsureAdmin
+0010: {
+0011:     /**
+0012:      * Handle an incoming request.
+0013:      *
+0014:      * @param  Closure(Request): (Response)  $next
+0015:      */
+0016:     public function handle(Request $request, Closure $next): Response
+0017:     {
+0018:         if (! $request->user() || ! $request->user()->is_admin) {
+0019:             abort(403, 'Доступ только для администратора.');
+0020:         }
+0021: 
+0022:         return $next($request);
+0023:     }
+0024: }
+
+===== app/Http/Controllers/Admin/DashboardController.php =====
+0001: <?php
+0002: 
+0003: namespace App\Http\Controllers\Admin;
+0004: 
+0005: use App\Http\Controllers\Controller;
+0006: use App\Models\Dish;
+0007: use App\Models\Order;
+0008: use App\Models\Restaurant;
+0009: use App\Models\User;
+0010: use Illuminate\View\View;
+0011: 
+0012: class DashboardController extends Controller
+0013: {
+0014:     public function index(): View
+0015:     {
+0016:         $stats = [
+0017:             'restaurants' => Restaurant::query()->count(),
+0018:             'dishes' => Dish::query()->count(),
+0019:             'users' => User::query()->count(),
+0020:             'orders' => Order::query()->count(),
+0021:             'new_orders' => Order::query()->where('status', 'new')->count(),
+0022:         ];
+0023: 
+0024:         $recentOrders = Order::query()
+0025:             ->with(['user', 'restaurant'])
+0026:             ->latest()
+0027:             ->take(8)
+0028:             ->get();
+0029: 
+0030:         return view('admin.dashboard', [
+0031:             'stats' => $stats,
+0032:             'recentOrders' => $recentOrders,
+0033:         ]);
+0034:     }
+0035: }
+
+===== app/Http/Controllers/Admin/RestaurantController.php =====
+0001: <?php
+0002: 
+0003: namespace App\Http\Controllers\Admin;
+0004: 
+0005: use App\Http\Controllers\Controller;
+0006: use App\Models\Restaurant;
+0007: use Illuminate\Http\RedirectResponse;
+0008: use Illuminate\Http\Request;
+0009: use Illuminate\Support\Str;
+0010: use Illuminate\Validation\Rule;
+0011: use Illuminate\View\View;
+0012: 
+0013: class RestaurantController extends Controller
+0014: {
+0015:     public function index(): View
+0016:     {
+0017:         $restaurants = Restaurant::query()
+0018:             ->withCount(['dishes', 'orders'])
+0019:             ->orderByDesc('id')
+0020:             ->get();
+0021: 
+0022:         return view('admin.restaurants.index', [
+0023:             'restaurants' => $restaurants,
+0024:         ]);
+0025:     }
+0026: 
+0027:     public function create(): View
+0028:     {
+0029:         return view('admin.restaurants.create', [
+0030:             'restaurant' => new Restaurant(),
+0031:         ]);
+0032:     }
+0033: 
+0034:     public function store(Request $request): RedirectResponse
+0035:     {
+0036:         $payload = $this->validatedPayload($request);
+0037:         Restaurant::query()->create($payload);
+0038: 
+0039:         return redirect()->route('admin.restaurants.index')->with('success', 'Ресторан добавлен.');
+0040:     }
+0041: 
+0042:     public function show(Restaurant $restaurant): View
+0043:     {
+0044:         $restaurant->loadCount(['dishes', 'orders', 'reviews']);
+0045: 
+0046:         return view('admin.restaurants.show', [
+0047:             'restaurant' => $restaurant,
+0048:         ]);
+0049:     }
+0050: 
+0051:     public function edit(Restaurant $restaurant): View
+0052:     {
+0053:         return view('admin.restaurants.edit', [
+0054:             'restaurant' => $restaurant,
+0055:         ]);
+0056:     }
+0057: 
+0058:     public function update(Request $request, Restaurant $restaurant): RedirectResponse
+0059:     {
+0060:         $payload = $this->validatedPayload($request, $restaurant);
+0061:         $restaurant->update($payload);
+0062: 
+0063:         return redirect()->route('admin.restaurants.index')->with('success', 'Ресторан обновлён.');
+0064:     }
+0065: 
+0066:     public function destroy(Restaurant $restaurant): RedirectResponse
+0067:     {
+0068:         $restaurant->delete();
+0069: 
+0070:         return redirect()->route('admin.restaurants.index')->with('success', 'Ресторан удалён.');
+0071:     }
+0072: 
+0073:     private function validatedPayload(Request $request, ?Restaurant $restaurant = null): array
+0074:     {
+0075:         $id = $restaurant?->id;
+0076: 
+0077:         $validated = $request->validate([
+0078:             'name' => ['required', 'string', 'max:255'],
+0079:             'slug' => ['nullable', 'string', 'max:255', Rule::unique('restaurants', 'slug')->ignore($id)],
+0080:             'description' => ['required', 'string', 'max:2000'],
+0081:             'cuisine' => ['required', 'string', 'max:255'],
+0082:             'address' => ['required', 'string', 'max:255'],
+0083:             'delivery_time' => ['required', 'integer', 'min:10', 'max:180'],
+0084:             'delivery_fee' => ['required', 'numeric', 'min:0'],
+0085:             'min_order_amount' => ['required', 'numeric', 'min:0'],
+0086:             'rating' => ['nullable', 'numeric', 'min:0', 'max:5'],
+0087:             'image' => ['nullable', 'string', 'max:255'],
+0088:             'image_file' => ['nullable', 'file', 'mimes:jpg,jpeg,png,webp,svg', 'max:4096'],
+0089:         ]);
+0090: 
+0091:         $validated['slug'] = $this->resolveSlug($validated['slug'] ?: $validated['name'], $id);
+0092:         $validated['is_active'] = $request->boolean('is_active');
+0093:         $validated['rating'] = $validated['rating'] ?? 0;
+0094: 
+0095:         if ($request->hasFile('image_file')) {
+0096:             $file = $request->file('image_file');
+0097:             $fileName = time() . '_' . Str::random(8) . '.' . $file->getClientOriginalExtension();
+0098:             $file->move(public_path('images/restaurants'), $fileName);
+0099:             $validated['image'] = '/images/restaurants/' . $fileName;
+0100:         }
+0101: 
+0102:         unset($validated['image_file']);
+0103: 
+0104:         return $validated;
+0105:     }
+0106: 
+0107:     private function resolveSlug(string $source, ?int $ignoreId = null): string
+0108:     {
+0109:         $slug = Str::slug($source);
+0110:         if ($slug === '') {
+0111:             $slug = 'restaurant';
+0112:         }
+0113: 
+0114:         $baseSlug = $slug;
+0115:         $counter = 1;
+0116: 
+0117:         while (
+0118:             Restaurant::query()
+0119:                 ->where('slug', $slug)
+0120:                 ->when($ignoreId, fn ($query) => $query->where('id', '!=', $ignoreId))
+0121:                 ->exists()
+0122:         ) {
+0123:             $counter++;
+0124:             $slug = $baseSlug . '-' . $counter;
+0125:         }
+0126: 
+0127:         return $slug;
+0128:     }
+0129: }
+
+===== app/Http/Controllers/Admin/DishController.php =====
+0001: <?php
+0002: 
+0003: namespace App\Http\Controllers\Admin;
+0004: 
+0005: use App\Http\Controllers\Controller;
+0006: use App\Models\Dish;
+0007: use App\Models\Restaurant;
+0008: use Illuminate\Http\RedirectResponse;
+0009: use Illuminate\Http\Request;
+0010: use Illuminate\Support\Str;
+0011: use Illuminate\View\View;
+0012: 
+0013: class DishController extends Controller
+0014: {
+0015:     public function index(): View
+0016:     {
+0017:         $dishes = Dish::query()
+0018:             ->with(['restaurant'])
+0019:             ->orderByDesc('id')
+0020:             ->get();
+0021: 
+0022:         return view('admin.dishes.index', [
+0023:             'dishes' => $dishes,
+0024:         ]);
+0025:     }
+0026: 
+0027:     public function create(): View
+0028:     {
+0029:         return view('admin.dishes.create', [
+0030:             'dish' => new Dish(),
+0031:             'restaurants' => Restaurant::query()->orderBy('name')->get(),
+0032:         ]);
+0033:     }
+0034: 
+0035:     public function store(Request $request): RedirectResponse
+0036:     {
+0037:         $payload = $this->validatedPayload($request);
+0038:         Dish::query()->create($payload);
+0039: 
+0040:         return redirect()->route('admin.dishes.index')->with('success', 'Блюдо добавлено.');
+0041:     }
+0042: 
+0043:     public function show(Dish $dish): View
+0044:     {
+0045:         $dish->load(['restaurant']);
+0046: 
+0047:         return view('admin.dishes.show', [
+0048:             'dish' => $dish,
+0049:         ]);
+0050:     }
+0051: 
+0052:     public function edit(Dish $dish): View
+0053:     {
+0054:         return view('admin.dishes.edit', [
+0055:             'dish' => $dish,
+0056:             'restaurants' => Restaurant::query()->orderBy('name')->get(),
+0057:         ]);
+0058:     }
+0059: 
+0060:     public function update(Request $request, Dish $dish): RedirectResponse
+0061:     {
+0062:         $payload = $this->validatedPayload($request);
+0063:         $dish->update($payload);
+0064: 
+0065:         return redirect()->route('admin.dishes.index')->with('success', 'Блюдо обновлено.');
+0066:     }
+0067: 
+0068:     public function destroy(Dish $dish): RedirectResponse
+0069:     {
+0070:         $dish->delete();
+0071: 
+0072:         return redirect()->route('admin.dishes.index')->with('success', 'Блюдо удалено.');
+0073:     }
+0074: 
+0075:     private function validatedPayload(Request $request): array
+0076:     {
+0077:         $validated = $request->validate([
+0078:             'restaurant_id' => ['required', 'integer', 'exists:restaurants,id'],
+0079:             'name' => ['required', 'string', 'max:255'],
+0080:             'description' => ['nullable', 'string', 'max:2000'],
+0081:             'price' => ['required', 'numeric', 'min:0'],
+0082:             'weight_grams' => ['nullable', 'integer', 'min:0'],
+0083:             'image' => ['nullable', 'string', 'max:255'],
+0084:             'image_file' => ['nullable', 'file', 'mimes:jpg,jpeg,png,webp,svg', 'max:4096'],
+0085:         ]);
+0086: 
+0087:         $validated['is_available'] = $request->boolean('is_available');
+0088: 
+0089:         if ($request->hasFile('image_file')) {
+0090:             $file = $request->file('image_file');
+0091:             $fileName = time() . '_' . Str::random(8) . '.' . $file->getClientOriginalExtension();
+0092:             $file->move(public_path('images/dishes'), $fileName);
+0093:             $validated['image'] = '/images/dishes/' . $fileName;
+0094:         }
+0095: 
+0096:         unset($validated['image_file']);
+0097: 
+0098:         return $validated;
+0099:     }
+0100: }
+
+===== app/Http/Controllers/Admin/OrderController.php =====
+0001: <?php
+0002: 
+0003: namespace App\Http\Controllers\Admin;
+0004: 
+0005: use App\Http\Controllers\Controller;
+0006: use App\Models\Order;
+0007: use App\Models\Restaurant;
+0008: use App\Models\User;
+0009: use Illuminate\Http\RedirectResponse;
+0010: use Illuminate\Http\Request;
+0011: use Illuminate\Validation\Rule;
+0012: use Illuminate\View\View;
+0013: 
+0014: class OrderController extends Controller
+0015: {
+0016:     private const STATUSES = ['new', 'processing', 'delivered', 'cancelled'];
+0017: 
+0018:     public function index(): View
+0019:     {
+0020:         $orders = Order::query()
+0021:             ->with(['user', 'restaurant'])
+0022:             ->withCount('items')
+0023:             ->latest()
+0024:             ->get();
+0025: 
+0026:         return view('admin.orders.index', [
+0027:             'orders' => $orders,
+0028:         ]);
+0029:     }
+0030: 
+0031:     public function create(): View
+0032:     {
+0033:         return view('admin.orders.create', [
+0034:             'order' => new Order([
+0035:                 'status' => 'new',
+0036:                 'total_amount' => 0,
+0037:                 'delivery_fee' => 0,
+0038:                 'ordered_at' => now(),
+0039:             ]),
+0040:             'users' => User::query()->orderBy('name')->get(['id', 'name', 'email']),
+0041:             'restaurants' => Restaurant::query()->orderBy('name')->get(['id', 'name']),
+0042:             'statuses' => self::STATUSES,
+0043:         ]);
+0044:     }
+0045: 
+0046:     public function store(Request $request): RedirectResponse
+0047:     {
+0048:         $payload = $this->validatedPayload($request);
+0049:         Order::query()->create($payload);
+0050: 
+0051:         return redirect()->route('admin.orders.index')->with('success', 'Заказ добавлен.');
+0052:     }
+0053: 
+0054:     public function show(Order $order): View
+0055:     {
+0056:         $order->load(['user', 'restaurant', 'items', 'review']);
+0057: 
+0058:         return view('admin.orders.show', [
+0059:             'order' => $order,
+0060:         ]);
+0061:     }
+0062: 
+0063:     public function edit(Order $order): View
+0064:     {
+0065:         return view('admin.orders.edit', [
+0066:             'order' => $order,
+0067:             'users' => User::query()->orderBy('name')->get(['id', 'name', 'email']),
+0068:             'restaurants' => Restaurant::query()->orderBy('name')->get(['id', 'name']),
+0069:             'statuses' => self::STATUSES,
+0070:         ]);
+0071:     }
+0072: 
+0073:     public function update(Request $request, Order $order): RedirectResponse
+0074:     {
+0075:         $payload = $this->validatedPayload($request, $order);
+0076:         $order->update($payload);
+0077: 
+0078:         return redirect()->route('admin.orders.show', $order)->with('success', 'Заказ обновлён.');
+0079:     }
+0080: 
+0081:     public function destroy(Order $order): RedirectResponse
+0082:     {
+0083:         $order->delete();
+0084: 
+0085:         return redirect()->route('admin.orders.index')->with('success', 'Заказ удалён.');
+0086:     }
+0087: 
+0088:     private function validatedPayload(Request $request, ?Order $order = null): array
+0089:     {
+0090:         $validated = $request->validate([
+0091:             'user_id' => ['required', 'integer', 'exists:users,id'],
+0092:             'restaurant_id' => ['required', 'integer', 'exists:restaurants,id'],
+0093:             'status' => ['required', 'string', Rule::in(self::STATUSES)],
+0094:             'delivery_address' => ['required', 'string', 'max:255'],
+0095:             'customer_phone' => ['required', 'string', 'max:50'],
+0096:             'comment' => ['nullable', 'string', 'max:1000'],
+0097:             'total_amount' => ['required', 'numeric', 'min:0'],
+0098:             'delivery_fee' => ['required', 'numeric', 'min:0'],
+0099:             'ordered_at' => ['nullable', 'date'],
+0100:         ]);
+0101: 
+0102:         $validated['ordered_at'] = $validated['ordered_at'] ?? $order?->ordered_at ?? now();
+0103: 
+0104:         return $validated;
+0105:     }
+0106: }
+
+===== app/Http/Controllers/Admin/UserController.php =====
+0001: <?php
+0002: 
+0003: namespace App\Http\Controllers\Admin;
+0004: 
+0005: use App\Http\Controllers\Controller;
+0006: use App\Models\User;
+0007: use Illuminate\Http\RedirectResponse;
+0008: use Illuminate\Http\Request;
+0009: use Illuminate\Support\Str;
+0010: use Illuminate\Validation\Rule;
+0011: use Illuminate\Validation\Rules\Password;
+0012: use Illuminate\View\View;
+0013: 
+0014: class UserController extends Controller
+0015: {
+0016:     public function index(): View
+0017:     {
+0018:         $users = User::query()
+0019:             ->withCount('orders')
+0020:             ->orderByDesc('id')
+0021:             ->get();
+0022: 
+0023:         return view('admin.users_index', [
+0024:             'users' => $users,
+0025:         ]);
+0026:     }
+0027: 
+0028:     public function create(): View
+0029:     {
+0030:         return view('admin.users_create', [
+0031:             'user' => new User(),
+0032:         ]);
+0033:     }
+0034: 
+0035:     public function store(Request $request): RedirectResponse
+0036:     {
+0037:         $payload = $this->validatedPayload($request);
+0038:         User::query()->create($payload);
+0039: 
+0040:         return redirect()->route('admin.users.index')->with('success', 'Пользователь добавлен.');
+0041:     }
+0042: 
+0043:     public function show(User $user): View
+0044:     {
+0045:         $user->loadCount(['orders', 'reviews', 'cartItems']);
+0046: 
+0047:         return view('admin.users_show', [
+0048:             'user' => $user,
+0049:         ]);
+0050:     }
+0051: 
+0052:     public function edit(User $user): View
+0053:     {
+0054:         return view('admin.users_edit', [
+0055:             'user' => $user,
+0056:         ]);
+0057:     }
+0058: 
+0059:     public function update(Request $request, User $user): RedirectResponse
+0060:     {
+0061:         $payload = $this->validatedPayload($request, $user);
+0062:         $isAdmin = (bool) ($payload['is_admin'] ?? false);
+0063: 
+0064:         if ($this->wouldLeaveNoAdmins($user, $isAdmin)) {
+0065:             return back()
+0066:                 ->withInput()
+0067:                 ->with('error', 'В системе должен остаться хотя бы один администратор.');
+0068:         }
+0069: 
+0070:         $user->update($payload);
+0071: 
+0072:         return redirect()->route('admin.users.index')->with('success', 'Пользователь обновлён.');
+0073:     }
+0074: 
+0075:     public function destroy(Request $request, User $user): RedirectResponse
+0076:     {
+0077:         if ($request->user()?->id === $user->id) {
+0078:             return back()->with('error', 'Нельзя удалить самого себя.');
+0079:         }
+0080: 
+0081:         if ($this->wouldLeaveNoAdmins($user, false)) {
+0082:             return back()->with('error', 'Нельзя удалить единственного администратора.');
+0083:         }
+0084: 
+0085:         $user->delete();
+0086: 
+0087:         return redirect()->route('admin.users.index')->with('success', 'Пользователь удалён.');
+0088:     }
+0089: 
+0090:     private function validatedPayload(Request $request, ?User $user = null): array
+0091:     {
+0092:         $userId = $user?->id;
+0093: 
+0094:         $validated = $request->validate([
+0095:             'name' => ['required', 'string', 'max:255'],
+0096:             'email' => ['required', 'string', 'email', 'max:255', Rule::unique('users', 'email')->ignore($userId)],
+0097:             'phone' => ['nullable', 'string', 'max:50'],
+0098:             'default_address' => ['nullable', 'string', 'max:255'],
+0099:             'password' => $user
+0100:                 ? ['nullable', 'string', Password::defaults(), 'confirmed']
+0101:                 : ['required', 'string', Password::defaults(), 'confirmed'],
+0102:         ]);
+0103: 
+0104:         $validated['email'] = Str::lower($validated['email']);
+0105:         $validated['is_admin'] = $request->boolean('is_admin');
+0106: 
+0107:         if (blank($validated['password'] ?? null)) {
+0108:             unset($validated['password']);
+0109:         }
+0110: 
+0111:         return $validated;
+0112:     }
+0113: 
+0114:     private function wouldLeaveNoAdmins(User $user, bool $targetIsAdmin): bool
+0115:     {
+0116:         if ($targetIsAdmin || ! $user->is_admin) {
+0117:             return false;
+0118:         }
+0119: 
+0120:         return User::query()
+0121:             ->where('is_admin', true)
+0122:             ->where('id', '!=', $user->id)
+0123:             ->doesntExist();
+0124:     }
+0125: }
+
+===== app/Models/User.php =====
+0001: <?php
+0002: 
+0003: namespace App\Models;
+0004: 
+0005: use Database\Factories\UserFactory;
+0006: use Illuminate\Database\Eloquent\Factories\HasFactory;
+0007: use Illuminate\Database\Eloquent\Relations\HasMany;
+0008: use Illuminate\Foundation\Auth\User as Authenticatable;
+0009: use Illuminate\Notifications\Notifiable;
+0010: 
+0011: class User extends Authenticatable
+0012: {
+0013:     /** @use HasFactory<UserFactory> */
+0014:     use HasFactory, Notifiable;
+0015: 
+0016:     protected $fillable = [
+0017:         'name',
+0018:         'email',
+0019:         'password',
+0020:         'phone',
+0021:         'default_address',
+0022:         'is_admin',
+0023:     ];
+0024: 
+0025:     protected $hidden = [
+0026:         'password',
+0027:         'remember_token',
+0028:     ];
+0029: 
+0030:     protected function casts(): array
+0031:     {
+0032:         return [
+0033:             'email_verified_at' => 'datetime',
+0034:             'password' => 'hashed',
+0035:             'is_admin' => 'boolean',
+0036:         ];
+0037:     }
+0038: 
+0039:     public function cartItems(): HasMany
+0040:     {
+0041:         return $this->hasMany(Cart::class);
+0042:     }
+0043: 
+0044:     public function orders(): HasMany
+0045:     {
+0046:         return $this->hasMany(Order::class);
+0047:     }
+0048: 
+0049:     public function reviews(): HasMany
+0050:     {
+0051:         return $this->hasMany(Review::class);
+0052:     }
+0053: }
+
+===== app/Models/Restaurant.php =====
+0001: <?php
+0002: 
+0003: namespace App\Models;
+0004: 
+0005: use Illuminate\Database\Eloquent\Factories\HasFactory;
+0006: use Illuminate\Database\Eloquent\Model;
+0007: use Illuminate\Database\Eloquent\Relations\HasMany;
+0008: 
+0009: class Restaurant extends Model
+0010: {
+0011:     use HasFactory;
+0012: 
+0013:     public const DEFAULT_IMAGE = '/images/restaurants/default.svg';
+0014: 
+0015:     protected $fillable = [
+0016:         'name',
+0017:         'slug',
+0018:         'description',
+0019:         'cuisine',
+0020:         'address',
+0021:         'delivery_time',
+0022:         'delivery_fee',
+0023:         'min_order_amount',
+0024:         'rating',
+0025:         'image',
+0026:         'is_active',
+0027:     ];
+0028: 
+0029:     protected function casts(): array
+0030:     {
+0031:         return [
+0032:             'delivery_fee' => 'decimal:2',
+0033:             'min_order_amount' => 'decimal:2',
+0034:             'rating' => 'decimal:1',
+0035:             'is_active' => 'boolean',
+0036:         ];
+0037:     }
+0038: 
+0039:     protected static function booted(): void
+0040:     {
+0041:         static::creating(function (Restaurant $restaurant): void {
+0042:             if (blank($restaurant->image)) {
+0043:                 $restaurant->image = self::DEFAULT_IMAGE;
+0044:             }
+0045:         });
+0046: 
+0047:         static::updating(function (Restaurant $restaurant): void {
+0048:             if (blank($restaurant->image)) {
+0049:                 $restaurant->image = self::DEFAULT_IMAGE;
+0050:             }
+0051:         });
+0052:     }
+0053: 
+0054:     public function getImageUrlAttribute(): string
+0055:     {
+0056:         return $this->image ?: self::DEFAULT_IMAGE;
+0057:     }
+0058: 
+0059:     public function categories(): HasMany
+0060:     {
+0061:         return $this->hasMany(Category::class);
+0062:     }
+0063: 
+0064:     public function dishes(): HasMany
+0065:     {
+0066:         return $this->hasMany(Dish::class);
+0067:     }
+0068: 
+0069:     public function orders(): HasMany
+0070:     {
+0071:         return $this->hasMany(Order::class);
+0072:     }
+0073: 
+0074:     public function reviews(): HasMany
+0075:     {
+0076:         return $this->hasMany(Review::class);
+0077:     }
+0078: 
+0079:     public function scopeActive($query)
+0080:     {
+0081:         return $query->where('is_active', true);
+0082:     }
+0083: }
+
+===== app/Models/Dish.php =====
+0001: <?php
+0002: 
+0003: namespace App\Models;
+0004: 
+0005: use Illuminate\Database\Eloquent\Factories\HasFactory;
+0006: use Illuminate\Database\Eloquent\Model;
+0007: use Illuminate\Database\Eloquent\Relations\BelongsTo;
+0008: use Illuminate\Database\Eloquent\Relations\HasMany;
+0009: 
+0010: class Dish extends Model
+0011: {
+0012:     use HasFactory;
+0013: 
+0014:     public const DEFAULT_IMAGE = '/images/dishes/default.svg';
+0015: 
+0016:     protected $fillable = [
+0017:         'restaurant_id',
+0018:         'category_id',
+0019:         'name',
+0020:         'description',
+0021:         'price',
+0022:         'weight_grams',
+0023:         'image',
+0024:         'is_available',
+0025:     ];
+0026: 
+0027:     protected function casts(): array
+0028:     {
+0029:         return [
+0030:             'price' => 'decimal:2',
+0031:             'weight_grams' => 'integer',
+0032:             'is_available' => 'boolean',
+0033:         ];
+0034:     }
+0035: 
+0036:     protected static function booted(): void
+0037:     {
+0038:         static::creating(function (Dish $dish): void {
+0039:             if (blank($dish->image)) {
+0040:                 $dish->image = self::DEFAULT_IMAGE;
+0041:             }
+0042:         });
+0043: 
+0044:         static::updating(function (Dish $dish): void {
+0045:             if (blank($dish->image)) {
+0046:                 $dish->image = self::DEFAULT_IMAGE;
+0047:             }
+0048:         });
+0049:     }
+0050: 
+0051:     public function getImageUrlAttribute(): string
+0052:     {
+0053:         return $this->image ?: self::DEFAULT_IMAGE;
+0054:     }
+0055: 
+0056:     public function restaurant(): BelongsTo
+0057:     {
+0058:         return $this->belongsTo(Restaurant::class);
+0059:     }
+0060: 
+0061:     public function category(): BelongsTo
+0062:     {
+0063:         return $this->belongsTo(Category::class);
+0064:     }
+0065: 
+0066:     public function cartItems(): HasMany
+0067:     {
+0068:         return $this->hasMany(Cart::class);
+0069:     }
+0070: 
+0071:     public function orderItems(): HasMany
+0072:     {
+0073:         return $this->hasMany(OrderItem::class);
+0074:     }
+0075: 
+0076:     public function scopeAvailable($query)
+0077:     {
+0078:         return $query->where('is_available', true);
+0079:     }
+0080: }
+
+===== app/Models/Cart.php =====
+0001: <?php
+0002: 
+0003: namespace App\Models;
+0004: 
+0005: use Illuminate\Database\Eloquent\Factories\HasFactory;
+0006: use Illuminate\Database\Eloquent\Model;
+0007: use Illuminate\Database\Eloquent\Relations\BelongsTo;
+0008: 
+0009: class Cart extends Model
+0010: {
+0011:     use HasFactory;
+0012: 
+0013:     protected $fillable = [
+0014:         'user_id',
+0015:         'dish_id',
+0016:         'quantity',
+0017:         'price',
+0018:     ];
+0019: 
+0020:     protected function casts(): array
+0021:     {
+0022:         return [
+0023:             'quantity' => 'integer',
+0024:             'price' => 'decimal:2',
+0025:         ];
+0026:     }
+0027: 
+0028:     public function user(): BelongsTo
+0029:     {
+0030:         return $this->belongsTo(User::class);
+0031:     }
+0032: 
+0033:     public function dish(): BelongsTo
+0034:     {
+0035:         return $this->belongsTo(Dish::class);
+0036:     }
+0037: }
+
+===== app/Models/Order.php =====
+0001: <?php
+0002: 
+0003: namespace App\Models;
+0004: 
+0005: use Illuminate\Database\Eloquent\Factories\HasFactory;
+0006: use Illuminate\Database\Eloquent\Model;
+0007: use Illuminate\Database\Eloquent\Relations\BelongsTo;
+0008: use Illuminate\Database\Eloquent\Relations\HasMany;
+0009: use Illuminate\Database\Eloquent\Relations\HasOne;
+0010: 
+0011: class Order extends Model
+0012: {
+0013:     use HasFactory;
+0014: 
+0015:     protected $fillable = [
+0016:         'user_id',
+0017:         'restaurant_id',
+0018:         'status',
+0019:         'delivery_address',
+0020:         'customer_phone',
+0021:         'comment',
+0022:         'total_amount',
+0023:         'delivery_fee',
+0024:         'ordered_at',
+0025:     ];
+0026: 
+0027:     protected function casts(): array
+0028:     {
+0029:         return [
+0030:             'total_amount' => 'decimal:2',
+0031:             'delivery_fee' => 'decimal:2',
+0032:             'ordered_at' => 'datetime',
+0033:         ];
+0034:     }
+0035: 
+0036:     public function user(): BelongsTo
+0037:     {
+0038:         return $this->belongsTo(User::class);
+0039:     }
+0040: 
+0041:     public function restaurant(): BelongsTo
+0042:     {
+0043:         return $this->belongsTo(Restaurant::class);
+0044:     }
+0045: 
+0046:     public function items(): HasMany
+0047:     {
+0048:         return $this->hasMany(OrderItem::class);
+0049:     }
+0050: 
+0051:     public function review(): HasOne
+0052:     {
+0053:         return $this->hasOne(Review::class);
+0054:     }
+0055: }
+
+===== app/Models/OrderItem.php =====
+0001: <?php
+0002: 
+0003: namespace App\Models;
+0004: 
+0005: use Illuminate\Database\Eloquent\Factories\HasFactory;
+0006: use Illuminate\Database\Eloquent\Model;
+0007: use Illuminate\Database\Eloquent\Relations\BelongsTo;
+0008: 
+0009: class OrderItem extends Model
+0010: {
+0011:     use HasFactory;
+0012: 
+0013:     protected $fillable = [
+0014:         'order_id',
+0015:         'dish_id',
+0016:         'dish_name',
+0017:         'quantity',
+0018:         'price',
+0019:     ];
+0020: 
+0021:     protected function casts(): array
+0022:     {
+0023:         return [
+0024:             'quantity' => 'integer',
+0025:             'price' => 'decimal:2',
+0026:         ];
+0027:     }
+0028: 
+0029:     public function order(): BelongsTo
+0030:     {
+0031:         return $this->belongsTo(Order::class);
+0032:     }
+0033: 
+0034:     public function dish(): BelongsTo
+0035:     {
+0036:         return $this->belongsTo(Dish::class);
+0037:     }
+0038: }
+
+===== database/seeders/DatabaseSeeder.php =====
+0001: <?php
+0002: 
+0003: namespace Database\Seeders;
+0004: 
+0005: use App\Models\Cart;
+0006: use App\Models\Restaurant;
+0007: use App\Models\User;
+0008: use Illuminate\Database\Console\Seeds\WithoutModelEvents;
+0009: use Illuminate\Database\Seeder;
+0010: use Illuminate\Support\Facades\Hash;
+0011: 
+0012: class DatabaseSeeder extends Seeder
+0013: {
+0014:     use WithoutModelEvents;
+0015: 
+0016:     public function run(): void
+0017:     {
+0018:         $users = [
+0019:             'anna' => User::query()->updateOrCreate(
+0020:                 ['email' => 'anna@example.com'],
+0021:                 [
+0022:                     'name' => 'Анна Смирнова',
+0023:                     'password' => Hash::make('password'),
+0024:                     'phone' => '+7 (901) 000-10-10',
+0025:                     'default_address' => 'Самара, ул. Ленина, 10',
+0026:                 ]
+0027:             ),
+0028:             'ivan' => User::query()->updateOrCreate(
+0029:                 ['email' => 'ivan@example.com'],
+0030:                 [
+0031:                     'name' => 'Иван Петров',
+0032:                     'password' => Hash::make('password'),
+0033:                     'phone' => '+7 (902) 000-20-20',
+0034:                     'default_address' => 'Самара, ул. Молодежная, 18',
+0035:                 ]
+0036:             ),
+0037:             'maria' => User::query()->updateOrCreate(
+0038:                 ['email' => 'maria@example.com'],
+0039:                 [
+0040:                     'name' => 'Мария Волкова',
+0041:                     'password' => Hash::make('password'),
+0042:                     'phone' => '+7 (903) 000-30-30',
+0043:                     'default_address' => 'Самара, ул. Полевая, 7',
+0044:                 ]
+0045:             ),
+0046:         ];
+0047: 
+0048:         $catalog = [
+0049:             [
+0050:                 'restaurant' => [
+0051:                     'name' => 'Пицца на районе',
+0052:                     'slug' => 'pizza-district',
+0053:                     'description' => 'Пицца из печи и паста с быстрой доставкой по району.',
+0054:                     'cuisine' => 'Итальянская кухня',
+0055:                     'address' => 'Самара, ул. Молодежная, 14',
+0056:                     'delivery_time' => 35,
+0057:                     'delivery_fee' => 149,
+0058:                     'min_order_amount' => 700,
+0059:                     'rating' => 4.8,
+0060:                     'image' => '/images/restaurants/pizza-district.svg',
+0061:                     'is_active' => true,
+0062:                 ],
+0063:                 'categories' => [
+0064:                     [
+0065:                         'name' => 'Пицца',
+0066:                         'slug' => 'pizza',
+0067:                         'sort_order' => 1,
+0068:                         'dishes' => [
+0069:                             ['name' => 'Маргарита', 'description' => 'Томатный соус, моцарелла, базилик.', 'price' => 549, 'weight_grams' => 480, 'image' => '/images/dishes/pizza.svg'],
+0070:                             ['name' => 'Пепперони', 'description' => 'Острая колбаса пепперони, сыр, фирменный соус.', 'price' => 689, 'weight_grams' => 520, 'image' => '/images/dishes/pizza.svg'],
+0071:                             ['name' => 'Четыре сыра', 'description' => 'Моцарелла, дорблю, пармезан и сливочный соус.', 'price' => 739, 'weight_grams' => 500, 'image' => '/images/dishes/pizza.svg'],
+0072:                         ],
+0073:                     ],
+0074:                     [
+0075:                         'name' => 'Паста',
+0076:                         'slug' => 'pasta',
+0077:                         'sort_order' => 2,
+0078:                         'dishes' => [
+0079:                             ['name' => 'Карбонара', 'description' => 'Сливочный соус, бекон, пармезан.', 'price' => 469, 'weight_grams' => 340, 'image' => '/images/dishes/pasta.svg'],
+0080:                             ['name' => 'Болоньезе', 'description' => 'Томаты, говяжий фарш, базилик, пармезан.', 'price' => 499, 'weight_grams' => 360, 'image' => '/images/dishes/pasta.svg'],
+0081:                         ],
+0082:                     ],
+0083:                 ],
+0084:                 'reviews' => [
+0085:                     ['user' => 'anna', 'rating' => 5, 'comment' => 'Пицца приехала горячей и очень вкусной.'],
+0086:                     ['user' => 'ivan', 'rating' => 4, 'comment' => 'Быстрая доставка и хорошее качество блюд.'],
+0087:                 ],
+0088:             ],
+0089:             [
+0090:                 'restaurant' => [
+0091:                     'name' => 'Бургерная Двор',
+0092:                     'slug' => 'burger-yard',
+0093:                     'description' => 'Сочные бургеры, картошка и закуски для обеда и ужина.',
+0094:                     'cuisine' => 'Американская кухня',
+0095:                     'address' => 'Самара, пр. Победы, 77',
+0096:                     'delivery_time' => 28,
+0097:                     'delivery_fee' => 99,
+0098:                     'min_order_amount' => 500,
+0099:                     'rating' => 4.7,
+0100:                     'image' => '/images/restaurants/burger-yard.svg',
+0101:                     'is_active' => true,
+0102:                 ],
+0103:                 'categories' => [
+0104:                     [
+0105:                         'name' => 'Бургеры',
+0106:                         'slug' => 'burgers',
+0107:                         'sort_order' => 1,
+0108:                         'dishes' => [
+0109:                             ['name' => 'Чизбургер XXL', 'description' => 'Двойная говяжья котлета, чеддер, соус барбекю.', 'price' => 590, 'weight_grams' => 390, 'image' => '/images/dishes/burger.svg'],
+0110:                             ['name' => 'Куриный бургер', 'description' => 'Хрустящее куриное филе, салат, чесночный соус.', 'price' => 430, 'weight_grams' => 310, 'image' => '/images/dishes/burger.svg'],
+0111:                             ['name' => 'Бургер с грибами', 'description' => 'Говядина, жареные шампиньоны, сыр и фирменный соус.', 'price' => 540, 'weight_grams' => 360, 'image' => '/images/dishes/burger.svg'],
+0112:                         ],
+0113:                     ],
+0114:                     [
+0115:                         'name' => 'Закуски',
+0116:                         'slug' => 'snacks',
+0117:                         'sort_order' => 2,
+0118:                         'dishes' => [
+0119:                             ['name' => 'Картофель фри', 'description' => 'Большая порция с кетчупом.', 'price' => 210, 'weight_grams' => 150, 'image' => '/images/dishes/snack.svg'],
+0120:                             ['name' => 'Луковые кольца', 'description' => 'Подаются с сырным соусом.', 'price' => 260, 'weight_grams' => 170, 'image' => '/images/dishes/snack.svg'],
+0121:                             ['name' => 'Наггетсы', 'description' => 'Хрустящие куриные кусочки с медово-горчичным соусом.', 'price' => 320, 'weight_grams' => 180, 'image' => '/images/dishes/snack.svg'],
+0122:                         ],
+0123:                     ],
+0124:                 ],
+0125:                 'reviews' => [
+0126:                     ['user' => 'ivan', 'rating' => 5, 'comment' => 'Большие порции и очень быстрая доставка.'],
+0127:                     ['user' => 'maria', 'rating' => 4, 'comment' => 'Всё приехало тёплым, хорошее соотношение цены и качества.'],
+0128:                 ],
+0129:             ],
+0130:             [
+0131:                 'restaurant' => [
+0132:                     'name' => 'Суши Волна',
+0133:                     'slug' => 'sushi-wave',
+0134:                     'description' => 'Роллы и боулы для вечерней доставки.',
+0135:                     'cuisine' => 'Японская кухня',
+0136:                     'address' => 'Самара, ул. Гагарина, 9',
+0137:                     'delivery_time' => 42,
+0138:                     'delivery_fee' => 0,
+0139:                     'min_order_amount' => 900,
+0140:                     'rating' => 4.9,
+0141:                     'image' => '/images/restaurants/sushi-wave.svg',
+0142:                     'is_active' => true,
+0143:                 ],
+0144:                 'categories' => [
+0145:                     [
+0146:                         'name' => 'Роллы',
+0147:                         'slug' => 'rolls',
+0148:                         'sort_order' => 1,
+0149:                         'dishes' => [
+0150:                             ['name' => 'Филадельфия', 'description' => 'Лосось, сливочный сыр, огурец.', 'price' => 720, 'weight_grams' => 260, 'image' => '/images/dishes/sushi.svg'],
+0151:                             ['name' => 'Калифорния', 'description' => 'Крабовый микс, авокадо, тобико.', 'price' => 640, 'weight_grams' => 240, 'image' => '/images/dishes/sushi.svg'],
+0152:                             ['name' => 'Запеченный с угрем', 'description' => 'Рис, угорь, сливочный соус и кунжут.', 'price' => 690, 'weight_grams' => 250, 'image' => '/images/dishes/sushi.svg'],
+0153:                         ],
+0154:                     ],
+0155:                     [
+0156:                         'name' => 'Боулы',
+0157:                         'slug' => 'bowls',
+0158:                         'sort_order' => 2,
+0159:                         'dishes' => [
+0160:                             ['name' => 'Поке с лососем', 'description' => 'Рис, лосось, эдамаме, манго, соус унаги.', 'price' => 580, 'weight_grams' => 330, 'image' => '/images/dishes/bowl.svg'],
+0161:                             ['name' => 'Поке с тунцом', 'description' => 'Рис, тунец, огурец, вакаме и соус понзу.', 'price' => 620, 'weight_grams' => 340, 'image' => '/images/dishes/bowl.svg'],
+0162:                         ],
+0163:                     ],
+0164:                 ],
+0165:                 'reviews' => [
+0166:                     ['user' => 'anna', 'rating' => 5, 'comment' => 'Очень свежие роллы и аккуратная упаковка.'],
+0167:                     ['user' => 'maria', 'rating' => 5, 'comment' => 'Отличное качество и бесплатная доставка.'],
+0168:                 ],
+0169:             ],
+0170:             [
+0171:                 'restaurant' => [
+0172:                     'name' => 'Магнит',
+0173:                     'slug' => 'magnit',
+0174:                     'description' => 'Супермаркет рядом с домом: свежие продукты, молочка и товары на каждый день.',
+0175:                     'cuisine' => 'Продуктовый магазин',
+0176:                     'address' => 'Самара, ул. Ново-Садовая, 201',
+0177:                     'delivery_time' => 45,
+0178:                     'delivery_fee' => 79,
+0179:                     'min_order_amount' => 800,
+0180:                     'rating' => 4.6,
+0181:                     'image' => '/images/restaurants/magnit.svg',
+0182:                     'is_active' => true,
+0183:                 ],
+0184:                 'categories' => [
+0185:                     [
+0186:                         'name' => 'Овощи и фрукты',
+0187:                         'slug' => 'produce',
+0188:                         'sort_order' => 1,
+0189:                         'dishes' => [
+0190:                             ['name' => 'Бананы, 1 кг', 'description' => 'Спелые бананы, фасовка по весу.', 'price' => 169, 'weight_grams' => 1000, 'image' => '/images/dishes/default.svg'],
+0191:                             ['name' => 'Огурцы тепличные, 500 г', 'description' => 'Хрустящие огурцы для салатов.', 'price' => 119, 'weight_grams' => 500, 'image' => '/images/dishes/default.svg'],
+0192:                             ['name' => 'Яблоки сезонные, 1 кг', 'description' => 'Сладко-кислые яблоки местной поставки.', 'price' => 159, 'weight_grams' => 1000, 'image' => '/images/dishes/default.svg'],
+0193:                         ],
+0194:                     ],
+0195:                     [
+0196:                         'name' => 'Молочные продукты',
+0197:                         'slug' => 'dairy',
+0198:                         'sort_order' => 2,
+0199:                         'dishes' => [
+0200:                             ['name' => 'Молоко 3.2%, 900 мл', 'description' => 'Пастеризованное молоко в бутылке.', 'price' => 109, 'weight_grams' => 900, 'image' => '/images/dishes/default.svg'],
+0201:                             ['name' => 'Кефир 2.5%, 930 мл', 'description' => 'Классический кефир для завтрака.', 'price' => 99, 'weight_grams' => 930, 'image' => '/images/dishes/default.svg'],
+0202:                             ['name' => 'Творог 5%, 300 г', 'description' => 'Нежный творог без добавок.', 'price' => 149, 'weight_grams' => 300, 'image' => '/images/dishes/default.svg'],
+0203:                         ],
+0204:                     ],
+0205:                     [
+0206:                         'name' => 'Бакалея',
+0207:                         'slug' => 'pantry',
+0208:                         'sort_order' => 3,
+0209:                         'dishes' => [
+0210:                             ['name' => 'Рис длиннозерный, 900 г', 'description' => 'Подходит для гарниров и плова.', 'price' => 129, 'weight_grams' => 900, 'image' => '/images/dishes/default.svg'],
+0211:                             ['name' => 'Макароны спагетти, 450 г', 'description' => 'Паста из твердых сортов пшеницы.', 'price' => 95, 'weight_grams' => 450, 'image' => '/images/dishes/default.svg'],
+0212:                             ['name' => 'Масло оливковое, 500 мл', 'description' => 'Extra virgin, для салатов и готовки.', 'price' => 499, 'weight_grams' => 500, 'image' => '/images/dishes/default.svg'],
+0213:                         ],
+0214:                     ],
+0215:                 ],
+0216:                 'reviews' => [
+0217:                     ['user' => 'ivan', 'rating' => 5, 'comment' => 'Удобно, что можно заказать базовые продукты одним кликом.'],
+0218:                     ['user' => 'maria', 'rating' => 4, 'comment' => 'Овощи свежие, привезли вовремя.'],
+0219:                 ],
+0220:             ],
+0221:             [
+0222:                 'restaurant' => [
+0223:                     'name' => 'Пятёрочка',
+0224:                     'slug' => 'pyaterochka',
+0225:                     'description' => 'Готовая еда, напитки и товары на каждый день с быстрой доставкой.',
+0226:                     'cuisine' => 'Супермаркет',
+0227:                     'address' => 'Самара, ул. Победы, 32',
+0228:                     'delivery_time' => 40,
+0229:                     'delivery_fee' => 69,
+0230:                     'min_order_amount' => 700,
+0231:                     'rating' => 4.5,
+0232:                     'image' => '/images/restaurants/pyaterochka.svg',
+0233:                     'is_active' => true,
+0234:                 ],
+0235:                 'categories' => [
+0236:                     [
+0237:                         'name' => 'Готовая еда',
+0238:                         'slug' => 'ready-meals',
+0239:                         'sort_order' => 1,
+0240:                         'dishes' => [
+0241:                             ['name' => 'Салат Цезарь, 250 г', 'description' => 'Курица, листья салата, сухарики и соус.', 'price' => 229, 'weight_grams' => 250, 'image' => '/images/dishes/bowl.svg'],
+0242:                             ['name' => 'Сэндвич с ветчиной и сыром', 'description' => 'Сэндвич на зерновом хлебе, 180 г.', 'price' => 189, 'weight_grams' => 180, 'image' => '/images/dishes/snack.svg'],
+0243:                             ['name' => 'Блинчики с мясом, 300 г', 'description' => 'Охлажденная готовая еда, 2 порции.', 'price' => 249, 'weight_grams' => 300, 'image' => '/images/dishes/snack.svg'],
+0244:                         ],
+0245:                     ],
+0246:                     [
+0247:                         'name' => 'Напитки',
+0248:                         'slug' => 'drinks',
+0249:                         'sort_order' => 2,
+0250:                         'dishes' => [
+0251:                             ['name' => 'Минеральная вода, 1.5 л', 'description' => 'Негазированная питьевая вода.', 'price' => 69, 'weight_grams' => 1500, 'image' => '/images/dishes/default.svg'],
+0252:                             ['name' => 'Морс клюквенный, 1 л', 'description' => 'Натуральный ягодный напиток.', 'price' => 149, 'weight_grams' => 1000, 'image' => '/images/dishes/default.svg'],
+0253:                             ['name' => 'Кола, 1 л', 'description' => 'Газированный напиток.', 'price' => 139, 'weight_grams' => 1000, 'image' => '/images/dishes/default.svg'],
+0254:                         ],
+0255:                     ],
+0256:                     [
+0257:                         'name' => 'Заморозка',
+0258:                         'slug' => 'frozen',
+0259:                         'sort_order' => 3,
+0260:                         'dishes' => [
+0261:                             ['name' => 'Пельмени домашние, 800 г', 'description' => 'Полуфабрикат из говядины и свинины.', 'price' => 369, 'weight_grams' => 800, 'image' => '/images/dishes/default.svg'],
+0262:                             ['name' => 'Овощная смесь, 400 г', 'description' => 'Брокколи, морковь, цветная капуста.', 'price' => 159, 'weight_grams' => 400, 'image' => '/images/dishes/default.svg'],
+0263:                             ['name' => 'Пломбир ванильный, 450 г', 'description' => 'Сливочное мороженое в контейнере.', 'price' => 269, 'weight_grams' => 450, 'image' => '/images/dishes/default.svg'],
+0264:                         ],
+0265:                     ],
+0266:                 ],
+0267:                 'reviews' => [
+0268:                     ['user' => 'anna', 'rating' => 5, 'comment' => 'Хороший выбор готовой еды и адекватные цены.'],
+0269:                     ['user' => 'ivan', 'rating' => 4, 'comment' => 'Нормальная доставка, часто беру воду и заморозку.'],
+0270:                 ],
+0271:             ],
+0272:             [
+0273:                 'restaurant' => [
+0274:                     'name' => 'Чижик',
+0275:                     'slug' => 'chizhik',
+0276:                     'description' => 'Дискаунтер с упором на выгодные цены и базовые продукты на неделю.',
+0277:                     'cuisine' => 'Дискаунтер',
+0278:                     'address' => 'Самара, ул. Дачная, 2',
+0279:                     'delivery_time' => 48,
+0280:                     'delivery_fee' => 59,
+0281:                     'min_order_amount' => 600,
+0282:                     'rating' => 4.4,
+0283:                     'image' => '/images/restaurants/chizhik.svg',
+0284:                     'is_active' => true,
+0285:                 ],
+0286:                 'categories' => [
+0287:                     [
+0288:                         'name' => 'Мясо и птица',
+0289:                         'slug' => 'meat-poultry',
+0290:                         'sort_order' => 1,
+0291:                         'dishes' => [
+0292:                             ['name' => 'Филе куриное охлажденное, 1 кг', 'description' => 'Подходит для жарки и запекания.', 'price' => 399, 'weight_grams' => 1000, 'image' => '/images/dishes/default.svg'],
+0293:                             ['name' => 'Фарш домашний, 500 г', 'description' => 'Смесь говядины и свинины.', 'price' => 249, 'weight_grams' => 500, 'image' => '/images/dishes/default.svg'],
+0294:                             ['name' => 'Сосиски молочные, 450 г', 'description' => 'Классические сосиски для завтрака.', 'price' => 219, 'weight_grams' => 450, 'image' => '/images/dishes/default.svg'],
+0295:                         ],
+0296:                     ],
+0297:                     [
+0298:                         'name' => 'Сыры и колбасы',
+0299:                         'slug' => 'deli',
+0300:                         'sort_order' => 2,
+0301:                         'dishes' => [
+0302:                             ['name' => 'Сыр полутвердый 45%, 200 г', 'description' => 'Нарезка для бутербродов и перекусов.', 'price' => 179, 'weight_grams' => 200, 'image' => '/images/dishes/default.svg'],
+0303:                             ['name' => 'Колбаса докторская, 400 г', 'description' => 'Вареная колбаса для завтраков.', 'price' => 229, 'weight_grams' => 400, 'image' => '/images/dishes/default.svg'],
+0304:                             ['name' => 'Ветчина куриная, 300 г', 'description' => 'Нежная ветчина в вакуумной упаковке.', 'price' => 199, 'weight_grams' => 300, 'image' => '/images/dishes/default.svg'],
+0305:                         ],
+0306:                     ],
+0307:                     [
+0308:                         'name' => 'Крупы и консервация',
+0309:                         'slug' => 'staples',
+0310:                         'sort_order' => 3,
+0311:                         'dishes' => [
+0312:                             ['name' => 'Гречка ядрица, 900 г', 'description' => 'Быстрый гарнир на каждый день.', 'price' => 119, 'weight_grams' => 900, 'image' => '/images/dishes/default.svg'],
+0313:                             ['name' => 'Тунец в собственном соку, 185 г', 'description' => 'Консервы для салатов и сэндвичей.', 'price' => 149, 'weight_grams' => 185, 'image' => '/images/dishes/default.svg'],
+0314:                             ['name' => 'Фасоль красная, 400 г', 'description' => 'Консервированная фасоль в томатном соусе.', 'price' => 99, 'weight_grams' => 400, 'image' => '/images/dishes/default.svg'],
+0315:                         ],
+0316:                     ],
+0317:                 ],
+0318:                 'reviews' => [
+0319:                     ['user' => 'maria', 'rating' => 5, 'comment' => 'В Чижике реально выгодно брать базовые продукты.'],
+0320:                     ['user' => 'anna', 'rating' => 4, 'comment' => 'Доставка не самая быстрая, но цены отличные.'],
+0321:                 ],
+0322:             ],
+0323:         ];
+0324: 
+0325:         foreach ($catalog as $item) {
+0326:             $restaurant = Restaurant::query()->updateOrCreate(
+0327:                 ['slug' => $item['restaurant']['slug']],
+0328:                 $item['restaurant']
+0329:             );
+0330:             $createdDishes = collect();
+0331: 
+0332:             foreach ($item['categories'] as $categoryData) {
+0333:                 $dishes = $categoryData['dishes'];
+0334:                 unset($categoryData['dishes']);
+0335: 
+0336:                 $category = $restaurant->categories()->updateOrCreate(
+0337:                     ['slug' => $categoryData['slug']],
+0338:                     $categoryData
+0339:                 );
+0340: 
+0341:                 foreach ($dishes as $dishData) {
+0342:                     $createdDishes->push(
+0343:                         $category->dishes()->updateOrCreate(
+0344:                             ['name' => $dishData['name']],
+0345:                             $dishData + ['restaurant_id' => $restaurant->id]
+0346:                         )
+0347:                     );
+0348:                 }
+0349:             }
+0350: 
+0351:             foreach ($item['reviews'] as $reviewData) {
+0352:                 $restaurant->reviews()->updateOrCreate([
+0353:                     'user_id' => $users[$reviewData['user']]->id,
+0354:                     'comment' => $reviewData['comment'],
+0355:                 ], [
+0356:                     'rating' => $reviewData['rating'],
+0357:                 ]);
+0358:             }
+0359: 
+0360:             if ($restaurant->slug !== 'pizza-district') {
+0361:                 continue;
+0362:             }
+0363: 
+0364:             $customer = $users['anna'];
+0365:             $alreadyHasSeedOrder = $customer->orders()
+0366:                 ->where('restaurant_id', $restaurant->id)
+0367:                 ->exists();
+0368: 
+0369:             if ($alreadyHasSeedOrder) {
+0370:                 continue;
+0371:             }
+0372: 
+0373:             $selectedDishes = $createdDishes->take(2);
+0374: 
+0375:             if ($selectedDishes->isEmpty()) {
+0376:                 continue;
+0377:             }
+0378: 
+0379:             $subtotal = $selectedDishes->sum('price');
+0380: 
+0381:             $order = $customer->orders()->create([
+0382:                 'restaurant_id' => $restaurant->id,
+0383:                 'status' => 'new',
+0384:                 'delivery_address' => $customer->default_address,
+0385:                 'customer_phone' => $customer->phone,
+0386:                 'comment' => 'Позвонить за 5 минут до приезда.',
+0387:                 'total_amount' => $subtotal + $restaurant->delivery_fee,
+0388:                 'delivery_fee' => $restaurant->delivery_fee,
+0389:                 'ordered_at' => now(),
+0390:             ]);
+0391: 
+0392:             foreach ($selectedDishes as $dish) {
+0393:                 $order->items()->create([
+0394:                     'dish_id' => $dish->id,
+0395:                     'dish_name' => $dish->name,
+0396:                     'quantity' => 1,
+0397:                     'price' => $dish->price,
+0398:                 ]);
+0399: 
+0400:                 Cart::query()->updateOrCreate(
+0401:                     ['user_id' => $customer->id, 'dish_id' => $dish->id],
+0402:                     ['quantity' => 1, 'price' => $dish->price]
+0403:                 );
+0404:             }
+0405:         }
+0406:     }
+0407: }
+
+===== resources/views/home.blade.php =====
+0001: @extends('layouts.app')
+0002: 
+0003: @section('title', 'Наша Еда — доставка еды')
+0004: 
+0005: @section('content')
+0006:     <section class="hero">
+0007:         <div class="card">
+0008:             <h1 class="headline hero-title">Доставка еды для города за 30–40 минут</h1>
+0009:             <p class="muted" style="margin-top: 14px;">
+0010:                Сервис доставки еды.У нас вы можете заказать блюда из ресторана и продукты из магазина.
+0011:             </p>
+0012: 
+0013:             <div class="stats-grid">
+0014:                 <div class="stat">
+0015:                     <strong>{{ $stats['restaurants'] }}</strong>
+0016:                     <span>активных ресторанов</span>
+0017:                 </div>
+0018:                 <div class="stat">
+0019:                     <strong>{{ $stats['dishes'] }}</strong>
+0020:                     <span>доступных блюд</span>
+0021:                 </div>
+0022:                 <div class="stat">
+0023:                     <strong>{{ $stats['avgDelivery'] }} мин</strong>
+0024:                     <span>средняя доставка</span>
+0025:                 </div>
+0026:             </div>
+0027:         </div>
+0028: 
+0029:         <div class="card">
+0030:             <h2 class="headline" style="font-size: 28px;">Как это работает</h2>
+0031:             <p class="muted" style="margin-top: 8px;">Выберите ресторан, добавьте блюда в корзину, оформите заказ и отслеживайте историю в кабинете.</p>
+0032: 
+0033:             <div class="meta-row" style="margin-top: 14px;">
+0034:                 <span class="pill">Каталог</span>
+0035:                 <span class="pill">Корзина</span>
+0036:                 <span class="pill">Оформление</span>
+0037:                 <span class="pill">Кабинет</span>
+0038:             </div>
+0039: 
+0040:             <div class="actions-row" style="margin-top: 18px;">
+0041:                 <a class="btn btn-secondary" href="{{ route('restaurants.index') }}">Открыть меню</a>
+0042:                 @guest
+0043:                     <a class="btn btn-primary" href="{{ route('register') }}">Создать аккаунт</a>
+0044:                 @endguest
+0045:                 @auth
+0046:                     <a class="btn btn-primary" href="{{ route('account.index') }}">Перейти в кабинет</a>
+0047:                 @endauth
+0048:             </div>
+0049:         </div>
+0050:     </section>
+0051: 
+0052:     <section class="section-title">
+0053:         <h2 class="headline">Популярные рестораны</h2>
+0054:         <a class="btn btn-ghost" href="{{ route('restaurants.index') }}">Смотреть все</a>
+0055:     </section>
+0056: 
+0057:     @if($restaurants->isEmpty())
+0058:         <div class="empty">Пока нет данных. Выполните <code>php artisan migrate:fresh --seed</code>.</div>
+0059:     @else
+0060:         <section class="grid-3">
+0061:             @foreach($restaurants as $restaurant)
+0062:                 <article class="card">
+0063:                     <div class="restaurant-media">
+0064:                         <img src="{{ asset(ltrim($restaurant->image_url, '/')) }}" alt="Логотип {{ $restaurant->name }}" loading="lazy">
+0065:                     </div>
+0066: 
+0067:                     <h3 class="headline" style="font-size: 24px;">{{ $restaurant->name }}</h3>
+0068:                     <p class="muted" style="margin-top: 8px;">{{ $restaurant->description }}</p>
+0069: 
+0070:                     <div class="meta-row">
+0071:                         <span class="pill">{{ $restaurant->cuisine }}</span>
+0072:                         <span class="pill">{{ number_format((float) $restaurant->rating, 1) }}/5</span>
+0073:                         <span class="pill">{{ $restaurant->delivery_time }} мин</span>
+0074:                         <span class="pill">{{ $restaurant->available_dishes_count }} блюд</span>
+0075:                     </div>
+0076: 
+0077:                     <div class="actions-row">
+0078:                         <a class="btn btn-secondary" href="{{ route('restaurants.show', $restaurant->slug) }}">Открыть ресторан</a>
+0079:                     </div>
+0080:                 </article>
+0081:             @endforeach
+0082:         </section>
+0083:     @endif
+0084: 
+0085:     <section class="section-title">
+0086:         <h2 class="headline">Новые блюда</h2>
+0087:     </section>
+0088: 
+0089:     @if($featuredDishes->isEmpty())
+0090:         <div class="empty">Список блюд появится после заполнения базы.</div>
+0091:     @else
+0092:         <section class="grid-3">
+0093:             @foreach($featuredDishes as $dish)
+0094:                 <article class="card">
+0095:                     <div class="dish-media">
+0096:                         <img src="{{ asset(ltrim($dish->image_url, '/')) }}" alt="{{ $dish->name }}" loading="lazy">
+0097:                     </div>
+0098: 
+0099:                     <h3 class="headline" style="font-size: 22px;">{{ $dish->name }}</h3>
+0100:                     <p class="muted" style="margin-top: 8px;">{{ $dish->restaurant?->name ?? 'Ресторан' }}</p>
+0101:                     <p class="muted" style="margin-top: 8px;">{{ $dish->description }}</p>
+0102: 
+0103:                     <div class="actions-row">
+0104:                         <span class="price">{{ number_format((float) $dish->price, 0) }} ₽</span>
+0105: 
+0106:                         @auth
+0107:                             <form method="POST" action="{{ route('cart.store') }}">
+0108:                                 @csrf
+0109:                                 <input type="hidden" name="dish_id" value="{{ $dish->id }}">
+0110:                                 <button type="submit" class="btn btn-orange">В корзину</button>
+0111:                             </form>
+0112:                         @endauth
+0113: 
+0114:                         @guest
+0115:                             <a class="btn btn-orange" href="{{ route('login') }}">Войти для заказа</a>
+0116:                         @endguest
+0117:                     </div>
+0118:                 </article>
+0119:             @endforeach
+0120:         </section>
+0121:     @endif
+0122: @endsection
+
+===== resources/views/catalog/index.blade.php =====
+0001: @extends('layouts.app')
+0002: 
+0003: @section('title', 'Каталог блюд — Наша Еда')
+0004: 
+0005: @section('content')
+0006:     <section class="page-head" style="margin-top: 0;">
+0007:         <h1 class="headline" style="font-size: clamp(30px, 5vw, 46px);">Каталог блюд</h1>
+0008:         <p class="muted">Поиск, фильтры по ресторану, категории и цене.</p>
+0009:     </section>
+0010: 
+0011:     <section class="card filters-panel">
+0012:         <form method="GET" action="{{ route('catalog.index') }}" class="form-grid form-grid-6">
+0013:             <div class="form-group form-span-2">
+0014:                 <label for="q">Поиск</label>
+0015:                 <input id="q" type="text" name="q" value="{{ $filters['q'] }}" placeholder="Название блюда или ресторана">
+0016:             </div>
+0017: 
+0018:             <div class="form-group">
+0019:                 <label for="restaurant_id">Ресторан</label>
+0020:                 <select id="restaurant_id" name="restaurant_id">
+0021:                     <option value="">Все рестораны</option>
+0022:                     @foreach($restaurants as $restaurant)
+0023:                         <option value="{{ $restaurant->id }}" @selected((int) $filters['restaurant_id'] === $restaurant->id)>
+0024:                             {{ $restaurant->name }}
+0025:                         </option>
+0026:                     @endforeach
+0027:                 </select>
+0028:             </div>
+0029: 
+0030:             <div class="form-group">
+0031:                 <label for="category_id">Категория</label>
+0032:                 <select id="category_id" name="category_id">
+0033:                     <option value="">Все категории</option>
+0034:                     @foreach($categories as $category)
+0035:                         <option value="{{ $category->id }}" @selected((int) $filters['category_id'] === $category->id)>
+0036:                             {{ $category->name }}
+0037:                         </option>
+0038:                     @endforeach
+0039:                 </select>
+0040:             </div>
+0041: 
+0042:             <div class="form-group">
+0043:                 <label for="price_from">Цена от, ₽</label>
+0044:                 <input id="price_from" type="number" min="0" step="1" name="price_from" value="{{ $filters['price_from'] }}">
+0045:             </div>
+0046: 
+0047:             <div class="form-group">
+0048:                 <label for="price_to">Цена до, ₽</label>
+0049:                 <input id="price_to" type="number" min="0" step="1" name="price_to" value="{{ $filters['price_to'] }}">
+0050:             </div>
+0051: 
+0052:             <div class="form-group">
+0053:                 <label for="sort">Сортировка</label>
+0054:                 <select id="sort" name="sort">
+0055:                     <option value="popular" @selected($filters['sort'] === 'popular')>По умолчанию</option>
+0056:                     <option value="new" @selected($filters['sort'] === 'new')>Сначала новые</option>
+0057:                     <option value="price_asc" @selected($filters['sort'] === 'price_asc')>Цена по возрастанию</option>
+0058:                     <option value="price_desc" @selected($filters['sort'] === 'price_desc')>Цена по убыванию</option>
+0059:                 </select>
+0060:             </div>
+0061: 
+0062:             <div class="actions-row form-span-2">
+0063:                 <button type="submit" class="btn btn-secondary">Применить фильтры</button>
+0064:                 <a href="{{ route('catalog.index') }}" class="btn btn-ghost">Сбросить</a>
+0065:             </div>
+0066:         </form>
+0067:     </section>
+0068: 
+0069:     @if($dishes->isEmpty())
+0070:         <div class="empty">По выбранным фильтрам ничего не найдено.</div>
+0071:     @else
+0072:         <section class="grid-3">
+0073:             @foreach($dishes as $dish)
+0074:                 <article class="card">
+0075:                     <div class="dish-media">
+0076:                         <img src="{{ asset(ltrim($dish->image_url, '/')) }}" alt="{{ $dish->name }}" loading="lazy">
+0077:                     </div>
+0078: 
+0079:                     <h2 class="headline" style="font-size: 22px;">{{ $dish->name }}</h2>
+0080:                     <p class="muted" style="margin-top: 6px;">{{ $dish->restaurant?->name ?? 'Ресторан' }}</p>
+0081:                     <p class="muted" style="margin-top: 8px;">{{ \Illuminate\Support\Str::limit($dish->description ?? 'Описание будет добавлено позже.', 120) }}</p>
+0082: 
+0083:                     <div class="meta-row">
+0084:                         @if($dish->category)
+0085:                             <span class="pill">{{ $dish->category->name }}</span>
+0086:                         @endif
+0087:                         @if($dish->weight_grams)
+0088:                             <span class="pill">{{ $dish->weight_grams }} г</span>
+0089:                         @endif
+0090:                         <span class="pill">В наличии</span>
+0091:                     </div>
+0092: 
+0093:                     <div class="actions-row">
+0094:                         <span class="price">{{ number_format((float) $dish->price, 0) }} ₽</span>
+0095: 
+0096:                         @auth
+0097:                             <form method="POST" action="{{ route('cart.store') }}">
+0098:                                 @csrf
+0099:                                 <input type="hidden" name="dish_id" value="{{ $dish->id }}">
+0100:                                 <button type="submit" class="btn btn-orange">В корзину</button>
+0101:                             </form>
+0102:                         @else
+0103:                             <a class="btn btn-orange" href="{{ route('login') }}">Войти для заказа</a>
+0104:                         @endauth
+0105:                     </div>
+0106:                 </article>
+0107:             @endforeach
+0108:         </section>
+0109:     @endif
+0110: @endsection
+
+===== resources/views/cart/index.blade.php =====
+0001: @extends('layouts.app')
+0002: 
+0003: @section('title', 'Корзина — Наша Еда')
+0004: 
+0005: @section('content')
+0006:     <section class="section-title" style="margin-top: 0;">
+0007:         <h1 class="headline" style="font-size: clamp(34px, 5vw, 52px);">Корзина</h1>
+0008:     </section>
+0009: 
+0010:     @if($items->isEmpty())
+0011:         <div class="empty">
+0012:             Корзина пуста. Перейдите в <a href="{{ route('restaurants.index') }}"><strong>каталог</strong></a> и выберите блюда.
+0013:         </div>
+0014:     @else
+0015:         <section class="grid-2" style="align-items: start;">
+0016:             <div class="order-list">
+0017:                 @foreach($items as $item)
+0018:                     <article class="card">
+0019:                         <h2 class="headline" style="font-size: 24px;">{{ $item->dish?->name ?? 'Неизвестное блюдо' }}</h2>
+0020:                         <p class="muted" style="margin-top: 6px;">{{ $item->dish?->restaurant?->name ?? 'Неизвестный ресторан' }}</p>
+0021: 
+0022:                         <div class="meta-row">
+0023:                             <span class="pill">Цена {{ number_format((float) $item->price, 0) }} ₽</span>
+0024:                             <span class="pill">Сумма {{ number_format((float) $item->price * $item->quantity, 0) }} ₽</span>
+0025:                         </div>
+0026: 
+0027:                         <div class="actions-row">
+0028:                             <form method="POST" action="{{ route('cart.update', $item->id) }}" style="display:flex; align-items:center; gap:8px;">
+0029:                                 @csrf
+0030:                                 @method('PATCH')
+0031:                                 <input type="number" min="1" max="99" name="quantity" value="{{ $item->quantity }}" style="width: 88px;">
+0032:                                 <button class="btn btn-secondary" type="submit">Обновить</button>
+0033:                             </form>
+0034: 
+0035:                             <form method="POST" action="{{ route('cart.destroy', $item->id) }}">
+0036:                                 @csrf
+0037:                                 @method('DELETE')
+0038:                                 <button class="btn btn-danger" type="submit">Удалить</button>
+0039:                             </form>
+0040:                         </div>
+0041:                     </article>
+0042:                 @endforeach
+0043:             </div>
+0044: 
+0045:             <aside class="card">
+0046:                 <h2 class="headline" style="font-size: 28px;">Оформление заказа</h2>
+0047: 
+0048:                 <div class="meta-row" style="margin-top: 10px;">
+0049:                     <span class="pill">Товары {{ number_format((float) $subtotal, 0) }} ₽</span>
+0050:                     <span class="pill">Доставка {{ number_format((float) $deliveryFee, 0) }} ₽</span>
+0051:                     <span class="pill"><strong>Итого {{ number_format((float) $total, 0) }} ₽</strong></span>
+0052:                 </div>
+0053: 
+0054:                 <form method="POST" action="{{ route('checkout.store') }}" style="margin-top: 14px;">
+0055:                     @csrf
+0056: 
+0057:                     <div class="form-group">
+0058:                         <label for="delivery_address">Адрес доставки</label>
+0059:                         <input
+0060:                             id="delivery_address"
+0061:                             type="text"
+0062:                             name="delivery_address"
+0063:                             value="{{ old('delivery_address', auth()->user()->default_address) }}"
+0064:                             required
+0065:                         >
+0066:                     </div>
+0067: 
+0068:                     <div class="form-group">
+0069:                         <label for="customer_phone">Телефон</label>
+0070:                         <input
+0071:                             id="customer_phone"
+0072:                             type="text"
+0073:                             name="customer_phone"
+0074:                             value="{{ old('customer_phone', auth()->user()->phone) }}"
+0075:                             required
+0076:                         >
+0077:                     </div>
+0078: 
+0079:                     <div class="form-group">
+0080:                         <label for="comment">Комментарий курьеру</label>
+0081:                         <textarea id="comment" name="comment">{{ old('comment') }}</textarea>
+0082:                     </div>
+0083: 
+0084:                     <button class="btn btn-orange" type="submit" style="width: 100%;">Оформить заказ</button>
+0085:                 </form>
+0086:             </aside>
+0087:         </section>
+0088:     @endif
+0089: @endsection
+
+===== resources/views/account/index.blade.php =====
+0001: @extends('layouts.app')
+0002: 
+0003: @section('title', 'Личный кабинет — Наша Еда')
+0004: 
+0005: @section('content')
+0006:     @php
+0007:         $activeOrdersCount = $orders->whereIn('status', ['new', 'processing'])->count();
+0008:         $lastOrder = $orders->first();
+0009:         $lastOrderDate = $lastOrder ? (($lastOrder->ordered_at ?? $lastOrder->created_at)?->format('d.m.Y H:i')) : null;
+0010:     @endphp
+0011: 
+0012:     <section class="section-title" style="margin-top: 0;">
+0013:         <h1 class="headline" style="font-size: clamp(34px, 5vw, 52px);">Личный кабинет</h1>
+0014:     </section>
+0015: 
+0016:     <section class="grid-2" style="align-items: start;">
+0017:         <article class="card">
+0018:             <h2 class="headline" style="font-size: 28px;">Профиль</h2>
+0019:             <p class="muted" style="margin-top: 8px;">Эти данные подставляются в форму оформления заказа.</p>
+0020: 
+0021:             <form method="POST" action="{{ route('account.update') }}" style="margin-top: 14px;">
+0022:                 @csrf
+0023:                 @method('PATCH')
+0024: 
+0025:                 <div class="form-group">
+0026:                     <label for="name">Имя</label>
+0027:                     <input id="name" type="text" name="name" required value="{{ old('name', $user->name) }}">
+0028:                 </div>
+0029: 
+0030:                 <div class="form-group">
+0031:                     <label for="phone">Телефон</label>
+0032:                     <input id="phone" type="text" name="phone" value="{{ old('phone', $user->phone) }}">
+0033:                 </div>
+0034: 
+0035:                 <div class="form-group">
+0036:                     <label for="default_address">Адрес по умолчанию</label>
+0037:                     <input id="default_address" type="text" name="default_address" value="{{ old('default_address', $user->default_address) }}">
+0038:                 </div>
+0039: 
+0040:                 <button type="submit" class="btn btn-primary">Сохранить профиль</button>
+0041:             </form>
+0042:         </article>
+0043: 
+0044:         <article class="card">
+0045:             <h2 class="headline" style="font-size: 28px;">Статистика</h2>
+0046:             <div class="stats-grid" style="margin-top: 12px;">
+0047:                 <div class="stat">
+0048:                     <small>Всего заказов</small>
+0049:                     <strong>{{ $orders->count() }}</strong>
+0050:                 </div>
+0051:                 <div class="stat">
+0052:                     <small>В обработке</small>
+0053:                     <strong>{{ $activeOrdersCount }}</strong>
+0054:                 </div>
+0055:                 <div class="stat">
+0056:                     <small>Потрачено</small>
+0057:                     <strong>{{ number_format((float) $totalSpent, 0) }} ₽</strong>
+0058:                 </div>
+0059:             </div>
+0060:             <p class="muted" style="margin-top: 12px;">
+0061:                 Последний заказ:
+0062:                 <strong>{{ $lastOrderDate ?? 'пока нет заказов' }}</strong>
+0063:             </p>
+0064:         </article>
+0065:     </section>
+0066: 
+0067:     <section class="section-title">
+0068:         <h2 class="headline">История заказов</h2>
+0069:     </section>
+0070: 
+0071:     @if($orders->isEmpty())
+0072:         <div class="empty">У вас пока нет заказов. Добавьте блюда в корзину и оформите первый заказ.</div>
+0073:     @else
+0074:         <section class="order-list">
+0075:             @foreach($orders as $order)
+0076:                 @php
+0077:                     $statusClass = match($order->status) {
+0078:                         'processing' => 'status-processing',
+0079:                         'delivered' => 'status-delivered',
+0080:                         'cancelled' => 'status-cancelled',
+0081:                         default => 'status-new',
+0082:                     };
+0083: 
+0084:                     $statusLabel = match($order->status) {
+0085:                         'processing' => 'Готовится',
+0086:                         'delivered' => 'Доставлен',
+0087:                         'cancelled' => 'Отменён',
+0088:                         default => 'Новый',
+0089:                     };
+0090: 
+0091:                     $orderedAt = $order->ordered_at ?? $order->created_at;
+0092:                     $itemCount = (int) $order->items->sum('quantity');
+0093:                     $itemsSubtotal = $order->items->sum(fn ($item) => (float) $item->price * $item->quantity);
+0094:                     $deliveryFee = (float) ($order->delivery_fee ?? 0);
+0095:                 @endphp
+0096: 
+0097:                 <article class="card order-card">
+0098:                     <div class="order-head">
+0099:                         <div>
+0100:                             <h3 class="headline order-title">Заказ #{{ $order->id }}</h3>
+0101:                             <p class="muted order-subtitle">
+0102:                                 {{ $order->restaurant?->name ?? 'Ресторан' }} • {{ $orderedAt?->format('d.m.Y H:i') }}
+0103:                             </p>
+0104:                         </div>
+0105: 
+0106:                         <div class="order-badges">
+0107:                             <span class="badge-status {{ $statusClass }}">{{ $statusLabel }}</span>
+0108:                             <span class="pill">Позиций: {{ $itemCount }}</span>
+0109:                             <span class="pill">Итого: {{ number_format((float) $order->total_amount, 0) }} ₽</span>
+0110:                         </div>
+0111:                     </div>
+0112: 
+0113:                     <div class="order-info-grid">
+0114:                         <div class="order-info-item">
+0115:                             <p class="order-info-label">Адрес доставки</p>
+0116:                             <p class="order-info-value">{{ $order->delivery_address }}</p>
+0117:                         </div>
+0118:                         <div class="order-info-item">
+0119:                             <p class="order-info-label">Телефон</p>
+0120:                             <p class="order-info-value">{{ $order->customer_phone }}</p>
+0121:                         </div>
+0122:                     </div>
+0123: 
+0124:                     @if($order->comment)
+0125:                         <div class="order-note">
+0126:                             <p class="order-info-label">Комментарий к заказу</p>
+0127:                             <p class="order-info-value">{{ $order->comment }}</p>
+0128:                         </div>
+0129:                     @endif
+0130: 
+0131:                     <div class="table-card order-table-card">
+0132:                         <div class="table-wrap">
+0133:                             <table class="table order-table">
+0134:                                 <thead>
+0135:                                     <tr>
+0136:                                         <th>Блюдо</th>
+0137:                                         <th>Кол-во</th>
+0138:                                         <th>Цена</th>
+0139:                                         <th>Сумма</th>
+0140:                                     </tr>
+0141:                                 </thead>
+0142:                                 <tbody>
+0143:                                     @forelse($order->items as $item)
+0144:                                         <tr>
+0145:                                             <td>{{ $item->dish_name }}</td>
+0146:                                             <td>{{ $item->quantity }} шт.</td>
+0147:                                             <td>{{ number_format((float) $item->price, 0) }} ₽</td>
+0148:                                             <td>{{ number_format((float) $item->price * $item->quantity, 0) }} ₽</td>
+0149:                                         </tr>
+0150:                                     @empty
+0151:                                         <tr>
+0152:                                             <td colspan="4">Состав заказа недоступен.</td>
+0153:                                         </tr>
+0154:                                     @endforelse
+0155:                                 </tbody>
+0156:                                 <tfoot>
+0157:                                     <tr>
+0158:                                         <th colspan="3">Блюда</th>
+0159:                                         <th>{{ number_format((float) $itemsSubtotal, 0) }} ₽</th>
+0160:                                     </tr>
+0161:                                     <tr>
+0162:                                         <th colspan="3">Доставка</th>
+0163:                                         <th>{{ number_format($deliveryFee, 0) }} ₽</th>
+0164:                                     </tr>
+0165:                                     <tr>
+0166:                                         <th colspan="3">Итого</th>
+0167:                                         <th>{{ number_format((float) $order->total_amount, 0) }} ₽</th>
+0168:                                     </tr>
+0169:                                 </tfoot>
+0170:                             </table>
+0171:                         </div>
+0172:                     </div>
+0173:                 </article>
+0174:             @endforeach
+0175:         </section>
+0176:     @endif
+0177: @endsection
+
+===== resources/views/admin/dashboard.blade.php =====
+0001: @extends('layouts.app')
+0002: 
+0003: @section('title', 'Админка — Наша Еда')
+0004: 
+0005: @section('content')
+0006:     <section class="page-head" style="margin-top: 0;">
+0007:         <h1 class="headline" style="font-size: clamp(30px, 5vw, 44px);">Панель администратора</h1>
+0008:         <p class="muted">Управление пользователями, каталогом и заказами.</p>
+0009:     </section>
+0010: 
+0011:     <div class="admin-layout">
+0012:         @include('admin._nav')
+0013: 
+0014:         <div class="admin-main">
+0015:             <section class="grid-3">
+0016:                 <article class="card">
+0017:                     <h2 class="headline" style="font-size: 22px;">Рестораны</h2>
+0018:                     <p class="muted" style="margin-top: 8px;">{{ $stats['restaurants'] }} шт.</p>
+0019:                     <div class="actions-row">
+0020:                         <a class="btn btn-secondary" href="{{ route('admin.restaurants.index') }}">Открыть</a>
+0021:                     </div>
+0022:                 </article>
+0023:                 <article class="card">
+0024:                     <h2 class="headline" style="font-size: 22px;">Пользователи</h2>
+0025:                     <p class="muted" style="margin-top: 8px;">{{ $stats['users'] }} шт.</p>
+0026:                     <div class="actions-row">
+0027:                         <a class="btn btn-secondary" href="{{ route('admin.users.index') }}">Открыть</a>
+0028:                     </div>
+0029:                 </article>
+0030:                 <article class="card">
+0031:                     <h2 class="headline" style="font-size: 22px;">Блюда</h2>
+0032:                     <p class="muted" style="margin-top: 8px;">{{ $stats['dishes'] }} шт.</p>
+0033:                     <div class="actions-row">
+0034:                         <a class="btn btn-secondary" href="{{ route('admin.dishes.index') }}">Открыть</a>
+0035:                     </div>
+0036:                 </article>
+0037:                 <article class="card">
+0038:                     <h2 class="headline" style="font-size: 22px;">Заказы</h2>
+0039:                     <p class="muted" style="margin-top: 8px;">Всего: {{ $stats['orders'] }}</p>
+0040:                     <p class="muted">Новых: {{ $stats['new_orders'] }}</p>
+0041:                     <div class="actions-row">
+0042:                         <a class="btn btn-secondary" href="{{ route('admin.orders.index') }}">Открыть</a>
+0043:                     </div>
+0044:                 </article>
+0045:             </section>
+0046: 
+0047:             <section class="section-title">
+0048:                 <h2 class="headline">Последние заказы</h2>
+0049:             </section>
+0050: 
+0051:             @if($recentOrders->isEmpty())
+0052:                 <div class="empty">Заказов пока нет.</div>
+0053:             @else
+0054:                 <section class="table-card">
+0055:                     <div class="table-wrap">
+0056:                         <table class="table">
+0057:                             <thead>
+0058:                                 <tr>
+0059:                                     <th>#</th>
+0060:                                     <th>Пользователь</th>
+0061:                                     <th>Ресторан</th>
+0062:                                     <th>Сумма</th>
+0063:                                     <th>Статус</th>
+0064:                                     <th></th>
+0065:                                 </tr>
+0066:                             </thead>
+0067:                             <tbody>
+0068:                                 @foreach($recentOrders as $order)
+0069:                                     @php
+0070:                                         $statusClass = match($order->status) {
+0071:                                             'processing' => 'status-processing',
+0072:                                             'delivered' => 'status-delivered',
+0073:                                             'cancelled' => 'status-cancelled',
+0074:                                             default => 'status-new',
+0075:                                         };
+0076:                                         $statusLabel = match($order->status) {
+0077:                                             'processing' => 'В работе',
+0078:                                             'delivered' => 'Доставлен',
+0079:                                             'cancelled' => 'Отменен',
+0080:                                             default => 'Новый',
+0081:                                         };
+0082:                                     @endphp
+0083:                                     <tr>
+0084:                                         <td>#{{ $order->id }}</td>
+0085:                                         <td>{{ $order->user?->name ?? '—' }}</td>
+0086:                                         <td>{{ $order->restaurant?->name ?? '—' }}</td>
+0087:                                         <td>{{ number_format((float) $order->total_amount, 0) }} ₽</td>
+0088:                                         <td><span class="badge-status {{ $statusClass }}">{{ $statusLabel }}</span></td>
+0089:                                         <td class="table-actions">
+0090:                                             <a class="btn btn-ghost" href="{{ route('admin.orders.show', $order) }}">Открыть</a>
+0091:                                         </td>
+0092:                                     </tr>
+0093:                                 @endforeach
+0094:                             </tbody>
+0095:                         </table>
+0096:                     </div>
+0097:                 </section>
+0098:             @endif
+0099:         </div>
+0100:     </div>
+0101: @endsection
+
+===== resources/views/admin/restaurants/index.blade.php =====
+0001: @extends('layouts.app')
+0002: 
+0003: @section('title', 'Админка: рестораны')
+0004: 
+0005: @section('content')
+0006:     <section class="page-head" style="margin-top: 0;">
+0007:         <h1 class="headline" style="font-size: clamp(28px, 5vw, 40px);">Рестораны</h1>
+0008:         <a href="{{ route('admin.restaurants.create') }}" class="btn btn-primary">Добавить ресторан</a>
+0009:     </section>
+0010: 
+0011:     <div class="admin-layout">
+0012:         @include('admin._nav')
+0013: 
+0014:         <div class="admin-main">
+0015:             @if($restaurants->isEmpty())
+0016:                 <div class="empty">Рестораны пока не добавлены.</div>
+0017:             @else
+0018:                 <section class="table-card">
+0019:                     <div class="table-wrap">
+0020:                         <table class="table">
+0021:                             <thead>
+0022:                                 <tr>
+0023:                                     <th>ID</th>
+0024:                                     <th>Логотип</th>
+0025:                                     <th>Название</th>
+0026:                                     <th>Кухня</th>
+0027:                                     <th>Рейтинг</th>
+0028:                                     <th>Блюда</th>
+0029:                                     <th>Заказы</th>
+0030:                                     <th>Статус</th>
+0031:                                     <th></th>
+0032:                                 </tr>
+0033:                             </thead>
+0034:                             <tbody>
+0035:                                 @foreach($restaurants as $restaurant)
+0036:                                     <tr>
+0037:                                         <td>{{ $restaurant->id }}</td>
+0038:                                         <td>
+0039:                                             <div class="table-media">
+0040:                                                 <img src="{{ asset(ltrim($restaurant->image_url, '/')) }}" alt="Логотип {{ $restaurant->name }}" class="thumb" loading="lazy">
+0041:                                             </div>
+0042:                                         </td>
+0043:                                         <td>{{ $restaurant->name }}</td>
+0044:                                         <td>{{ $restaurant->cuisine }}</td>
+0045:                                         <td>{{ number_format((float) $restaurant->rating, 1) }}</td>
+0046:                                         <td>{{ $restaurant->dishes_count }}</td>
+0047:                                         <td>{{ $restaurant->orders_count }}</td>
+0048:                                         <td>
+0049:                                             @if($restaurant->is_active)
+0050:                                                 <span class="badge-status status-delivered">Активный</span>
+0051:                                             @else
+0052:                                                 <span class="badge-status status-cancelled">Выключен</span>
+0053:                                             @endif
+0054:                                         </td>
+0055:                                         <td class="table-actions">
+0056:                                             <a class="btn btn-ghost" href="{{ route('admin.restaurants.show', $restaurant) }}">Открыть</a>
+0057:                                             <a class="btn btn-ghost" href="{{ route('admin.restaurants.edit', $restaurant) }}">Изменить</a>
+0058:                                             <form method="POST" action="{{ route('admin.restaurants.destroy', $restaurant) }}" onsubmit="return confirm('Удалить ресторан?')">
+0059:                                                 @csrf
+0060:                                                 @method('DELETE')
+0061:                                                 <button class="btn btn-danger" type="submit">Удалить</button>
+0062:                                             </form>
+0063:                                         </td>
+0064:                                     </tr>
+0065:                                 @endforeach
+0066:                             </tbody>
+0067:                         </table>
+0068:                     </div>
+0069:                 </section>
+0070:             @endif
+0071:         </div>
+0072:     </div>
+0073: @endsection
+
+===== resources/views/admin/dishes/index.blade.php =====
+0001: @extends('layouts.app')
+0002: 
+0003: @section('title', 'Админка: блюда')
+0004: 
+0005: @section('content')
+0006:     <section class="page-head" style="margin-top: 0;">
+0007:         <h1 class="headline" style="font-size: clamp(28px, 5vw, 40px);">Блюда</h1>
+0008:         <a href="{{ route('admin.dishes.create') }}" class="btn btn-primary">Добавить блюдо</a>
+0009:     </section>
+0010: 
+0011:     <div class="admin-layout">
+0012:         @include('admin._nav')
+0013: 
+0014:         <div class="admin-main">
+0015:             @if($dishes->isEmpty())
+0016:                 <div class="empty">Блюда не найдены.</div>
+0017:             @else
+0018:                 <section class="table-card">
+0019:                     <div class="table-wrap">
+0020:                         <table class="table">
+0021:                             <thead>
+0022:                                 <tr>
+0023:                                     <th>ID</th>
+0024:                                     <th>Блюдо</th>
+0025:                                     <th>Ресторан</th>
+0026:                                     <th>Цена</th>
+0027:                                     <th>Статус</th>
+0028:                                     <th></th>
+0029:                                 </tr>
+0030:                             </thead>
+0031:                             <tbody>
+0032:                                 @foreach($dishes as $dish)
+0033:                                     <tr>
+0034:                                         <td>{{ $dish->id }}</td>
+0035:                                         <td>
+0036:                                             <div class="table-media">
+0037:                                                 <img src="{{ asset(ltrim($dish->image_url, '/')) }}" alt="{{ $dish->name }}" class="thumb">
+0038:                                                 <span>{{ $dish->name }}</span>
+0039:                                             </div>
+0040:                                         </td>
+0041:                                         <td>{{ $dish->restaurant?->name ?? '—' }}</td>
+0042:                                         <td>{{ number_format((float) $dish->price, 0) }} ₽</td>
+0043:                                         <td>
+0044:                                             @if($dish->is_available)
+0045:                                                 <span class="badge-status status-delivered">В наличии</span>
+0046:                                             @else
+0047:                                                 <span class="badge-status status-cancelled">Скрыто</span>
+0048:                                             @endif
+0049:                                         </td>
+0050:                                         <td class="table-actions">
+0051:                                             <a class="btn btn-ghost" href="{{ route('admin.dishes.show', $dish) }}">Открыть</a>
+0052:                                             <a class="btn btn-ghost" href="{{ route('admin.dishes.edit', $dish) }}">Изменить</a>
+0053:                                             <form method="POST" action="{{ route('admin.dishes.destroy', $dish) }}" onsubmit="return confirm('Удалить блюдо?')">
+0054:                                                 @csrf
+0055:                                                 @method('DELETE')
+0056:                                                 <button class="btn btn-danger" type="submit">Удалить</button>
+0057:                                             </form>
+0058:                                         </td>
+0059:                                     </tr>
+0060:                                 @endforeach
+0061:                             </tbody>
+0062:                         </table>
+0063:                     </div>
+0064:                 </section>
+0065:             @endif
+0066:         </div>
+0067:     </div>
+0068: @endsection
+
+===== resources/views/admin/orders/index.blade.php =====
+0001: @extends('layouts.app')
+0002: 
+0003: @section('title', 'Админка: заказы')
+0004: 
+0005: @section('content')
+0006:     <section class="page-head" style="margin-top: 0;">
+0007:         <h1 class="headline" style="font-size: clamp(28px, 5vw, 40px);">Заказы</h1>
+0008:         <a href="{{ route('admin.orders.create') }}" class="btn btn-primary">Добавить заказ</a>
+0009:     </section>
+0010: 
+0011:     <div class="admin-layout">
+0012:         @include('admin._nav')
+0013: 
+0014:         <div class="admin-main">
+0015:             @if($orders->isEmpty())
+0016:                 <div class="empty">Заказы не найдены.</div>
+0017:             @else
+0018:                 <section class="table-card">
+0019:                     <div class="table-wrap">
+0020:                         <table class="table">
+0021:                             <thead>
+0022:                                 <tr>
+0023:                                     <th>#</th>
+0024:                                     <th>Дата</th>
+0025:                                     <th>Клиент</th>
+0026:                                     <th>Ресторан</th>
+0027:                                     <th>Позиций</th>
+0028:                                     <th>Сумма</th>
+0029:                                     <th>Статус</th>
+0030:                                     <th></th>
+0031:                                 </tr>
+0032:                             </thead>
+0033:                             <tbody>
+0034:                                 @foreach($orders as $order)
+0035:                                     @php
+0036:                                         $statusClass = match($order->status) {
+0037:                                             'processing' => 'status-processing',
+0038:                                             'delivered' => 'status-delivered',
+0039:                                             'cancelled' => 'status-cancelled',
+0040:                                             default => 'status-new',
+0041:                                         };
+0042:                                         $statusLabel = match($order->status) {
+0043:                                             'processing' => 'В работе',
+0044:                                             'delivered' => 'Доставлен',
+0045:                                             'cancelled' => 'Отменен',
+0046:                                             default => 'Новый',
+0047:                                         };
+0048:                                     @endphp
+0049:                                     <tr>
+0050:                                         <td>#{{ $order->id }}</td>
+0051:                                         <td>{{ optional($order->ordered_at)->format('d.m.Y H:i') ?? $order->created_at->format('d.m.Y H:i') }}</td>
+0052:                                         <td>
+0053:                                             {{ $order->user?->name ?? '—' }}<br>
+0054:                                             <span class="muted">{{ $order->customer_phone }}</span>
+0055:                                         </td>
+0056:                                         <td>{{ $order->restaurant?->name ?? '—' }}</td>
+0057:                                         <td>{{ $order->items_count }}</td>
+0058:                                         <td>{{ number_format((float) $order->total_amount, 0) }} ₽</td>
+0059:                                         <td><span class="badge-status {{ $statusClass }}">{{ $statusLabel }}</span></td>
+0060:                                         <td class="table-actions">
+0061:                                             <a class="btn btn-ghost" href="{{ route('admin.orders.show', $order) }}">Открыть</a>
+0062:                                             <a class="btn btn-ghost" href="{{ route('admin.orders.edit', $order) }}">Изменить</a>
+0063:                                             <form method="POST" action="{{ route('admin.orders.destroy', $order) }}" onsubmit="return confirm('Удалить заказ?')">
+0064:                                                 @csrf
+0065:                                                 @method('DELETE')
+0066:                                                 <button class="btn btn-danger" type="submit">Удалить</button>
+0067:                                             </form>
+0068:                                         </td>
+0069:                                     </tr>
+0070:                                 @endforeach
+0071:                             </tbody>
+0072:                         </table>
+0073:                     </div>
+0074:                 </section>
+0075:             @endif
+0076:         </div>
+0077:     </div>
+0078: @endsection
+
+===== resources/views/admin/users_index.blade.php =====
+0001: @extends('layouts.app')
+0002: 
+0003: @section('title', 'Админка: пользователи')
+0004: 
+0005: @section('content')
+0006:     <section class="page-head" style="margin-top: 0;">
+0007:         <h1 class="headline" style="font-size: clamp(28px, 5vw, 40px);">Пользователи</h1>
+0008:         <a href="{{ route('admin.users.create') }}" class="btn btn-primary">Добавить пользователя</a>
+0009:     </section>
+0010: 
+0011:     <div class="admin-layout">
+0012:         @include('admin._nav')
+0013: 
+0014:         <div class="admin-main">
+0015:             @if($users->isEmpty())
+0016:                 <div class="empty">Пользователи не найдены.</div>
+0017:             @else
+0018:                 <section class="table-card">
+0019:                     <div class="table-wrap">
+0020:                         <table class="table">
+0021:                             <thead>
+0022:                                 <tr>
+0023:                                     <th>ID</th>
+0024:                                     <th>Имя</th>
+0025:                                     <th>E-mail</th>
+0026:                                     <th>Телефон</th>
+0027:                                     <th>Заказов</th>
+0028:                                     <th>Роль</th>
+0029:                                     <th></th>
+0030:                                 </tr>
+0031:                             </thead>
+0032:                             <tbody>
+0033:                                 @foreach($users as $user)
+0034:                                     <tr>
+0035:                                         <td>{{ $user->id }}</td>
+0036:                                         <td>{{ $user->name }}</td>
+0037:                                         <td>{{ $user->email }}</td>
+0038:                                         <td>{{ $user->phone ?: '—' }}</td>
+0039:                                         <td>{{ $user->orders_count }}</td>
+0040:                                         <td>
+0041:                                             @if($user->is_admin)
+0042:                                                 <span class="badge-status status-processing">Администратор</span>
+0043:                                             @else
+0044:                                                 <span class="badge-status status-new">Пользователь</span>
+0045:                                             @endif
+0046:                                         </td>
+0047:                                         <td class="table-actions">
+0048:                                             <a class="btn btn-ghost" href="{{ route('admin.users.show', $user) }}">Открыть</a>
+0049:                                             <a class="btn btn-ghost" href="{{ route('admin.users.edit', $user) }}">Изменить</a>
+0050:                                             <form method="POST" action="{{ route('admin.users.destroy', $user) }}" onsubmit="return confirm('Удалить пользователя?')">
+0051:                                                 @csrf
+0052:                                                 @method('DELETE')
+0053:                                                 <button class="btn btn-danger" type="submit" @disabled(auth()->id() === $user->id)>Удалить</button>
+0054:                                             </form>
+0055:                                         </td>
+0056:                                     </tr>
+0057:                                 @endforeach
+0058:                             </tbody>
+0059:                         </table>
+0060:                     </div>
+0061:                 </section>
+0062:             @endif
+0063:         </div>
+0064:     </div>
+0065: @endsection
+
+===== resources/css/app.css =====
+0001: @tailwind base;
+0002: @tailwind components;
+0003: @tailwind utilities;

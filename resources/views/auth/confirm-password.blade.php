@@ -1,27 +1,35 @@
-<x-guest-layout>
-    <div class="mb-4 text-sm text-gray-600 dark:text-gray-400">
-        {{ __('This is a secure area of the application. Please confirm your password before continuing.') }}
-    </div>
+@extends('layouts.app')
 
-    <form method="POST" action="{{ route('password.confirm') }}">
-        @csrf
+@section('title', 'Подтверждение пароля — Наша Еда')
 
-        <!-- Password -->
-        <div>
-            <x-input-label for="password" :value="__('Password')" />
+@section('content')
+    <section class="card" style="max-width: 560px; margin: 0 auto;">
+        <h1 class="headline" style="font-size: 32px;">Подтверждение пароля</h1>
+        <p class="muted" style="margin-top: 8px;">
+            Это защищенная зона. Подтвердите пароль для продолжения.
+        </p>
 
-            <x-text-input id="password" class="block mt-1 w-full"
-                            type="password"
-                            name="password"
-                            required autocomplete="current-password" />
+        <form method="POST" action="{{ route('password.confirm') }}" style="margin-top: 16px;">
+            @csrf
 
-            <x-input-error :messages="$errors->get('password')" class="mt-2" />
-        </div>
+            <div class="form-group">
+                <label for="password">Пароль</label>
+                <input
+                    id="password"
+                    type="password"
+                    name="password"
+                    required
+                    autocomplete="current-password"
+                >
+                @error('password')
+                    <small class="help" style="color: #b91c1c;">{{ $message }}</small>
+                @enderror
+            </div>
 
-        <div class="flex justify-end mt-4">
-            <x-primary-button>
-                {{ __('Confirm') }}
-            </x-primary-button>
-        </div>
-    </form>
-</x-guest-layout>
+            <div class="actions-row">
+                <button class="btn btn-primary" type="submit">Подтвердить</button>
+                <a class="btn btn-ghost" href="{{ route('home') }}">На главную</a>
+            </div>
+        </form>
+    </section>
+@endsection

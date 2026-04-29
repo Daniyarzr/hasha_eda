@@ -1,17 +1,10 @@
-<x-app-layout>
-    <x-slot name="header">
-        <h2 class="font-semibold text-xl text-gray-800 dark:text-gray-200 leading-tight">
-            {{ __('Dashboard') }}
-        </h2>
-    </x-slot>
+@extends('layouts.app')
 
-    <div class="py-12">
-        <div class="max-w-7xl mx-auto sm:px-6 lg:px-8">
-            <div class="bg-white dark:bg-gray-800 overflow-hidden shadow-sm sm:rounded-lg">
-                <div class="p-6 text-gray-900 dark:text-gray-100">
-                    {{ __("You're logged in!") }}
-                </div>
-            </div>
-        </div>
-    </div>
-</x-app-layout>
+@section('title', 'Личный кабинет — Наша Еда')
+
+@section('content')
+    <section class="card" style="max-width: 700px; margin: 0 auto;">
+        <h1 class="headline" style="font-size: 32px;">Личный кабинет</h1>
+        <p class="muted" style="margin-top: 8px;">Вы успешно вошли в систему.</p>
+    </section>
+@endsection

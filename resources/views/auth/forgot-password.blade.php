@@ -1,25 +1,40 @@
-<x-guest-layout>
-    <div class="mb-4 text-sm text-gray-600 dark:text-gray-400">
-        {{ __('Forgot your password? No problem. Just let us know your email address and we will email you a password reset link that will allow you to choose a new one.') }}
-    </div>
+@extends('layouts.app')
 
-    <!-- Session Status -->
-    <x-auth-session-status class="mb-4" :status="session('status')" />
+@section('title', 'Восстановление пароля — Наша Еда')
 
-    <form method="POST" action="{{ route('password.email') }}">
-        @csrf
+@section('content')
+    <section class="card" style="max-width: 560px; margin: 0 auto;">
+        <h1 class="headline" style="font-size: 32px;">Восстановление пароля</h1>
+        <p class="muted" style="margin-top: 8px;">
+            Введите email, и мы отправим ссылку для сброса пароля.
+        </p>
 
-        <!-- Email Address -->
-        <div>
-            <x-input-label for="email" :value="__('Email')" />
-            <x-text-input id="email" class="block mt-1 w-full" type="email" name="email" :value="old('email')" required autofocus />
-            <x-input-error :messages="$errors->get('email')" class="mt-2" />
-        </div>
+        @if (session('status'))
+            <div class="alert alert-success" style="margin-top: 12px;">{{ session('status') }}</div>
+        @endif
 
-        <div class="flex items-center justify-end mt-4">
-            <x-primary-button>
-                {{ __('Email Password Reset Link') }}
-            </x-primary-button>
-        </div>
-    </form>
-</x-guest-layout>
+        <form method="POST" action="{{ route('password.email') }}" style="margin-top: 16px;">
+            @csrf
+
+            <div class="form-group">
+                <label for="email">Email</label>
+                <input
+                    id="email"
+                    type="email"
+                    name="email"
+                    value="{{ old('email') }}"
+                    required
+                    autofocus
+                >
+                @error('email')
+                    <small class="help" style="color: #b91c1c;">{{ $message }}</small>
+                @enderror
+            </div>
+
+            <div class="actions-row">
+                <button class="btn btn-primary" type="submit">Отправить ссылку</button>
+                <a class="btn btn-ghost" href="{{ route('login') }}">Назад ко входу</a>
+            </div>
+        </form>
+    </section>
+@endsection

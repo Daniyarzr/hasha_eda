@@ -1,47 +1,43 @@
 <section>
     <header>
-        <h2 class="text-lg font-medium text-gray-900 dark:text-gray-100">
-            {{ __('Update Password') }}
-        </h2>
-
-        <p class="mt-1 text-sm text-gray-600 dark:text-gray-400">
-            {{ __('Ensure your account is using a long, random password to stay secure.') }}
+        <h2 class="headline" style="font-size: 24px;">Смена пароля</h2>
+        <p class="muted" style="margin-top: 8px;">
+            Укажите текущий и новый пароль.
         </p>
     </header>
 
-    <form method="post" action="{{ route('password.update') }}" class="mt-6 space-y-6">
+    <form method="POST" action="{{ route('password.update') }}" style="margin-top: 16px;">
         @csrf
-        @method('put')
+        @method('PUT')
 
-        <div>
-            <x-input-label for="update_password_current_password" :value="__('Current Password')" />
-            <x-text-input id="update_password_current_password" name="current_password" type="password" class="mt-1 block w-full" autocomplete="current-password" />
-            <x-input-error :messages="$errors->updatePassword->get('current_password')" class="mt-2" />
+        <div class="form-group">
+            <label for="update_password_current_password">Текущий пароль</label>
+            <input id="update_password_current_password" name="current_password" type="password" autocomplete="current-password">
+            @foreach ($errors->updatePassword->get('current_password') as $message)
+                <small class="help" style="color: #b91c1c;">{{ $message }}</small>
+            @endforeach
         </div>
 
-        <div>
-            <x-input-label for="update_password_password" :value="__('New Password')" />
-            <x-text-input id="update_password_password" name="password" type="password" class="mt-1 block w-full" autocomplete="new-password" />
-            <x-input-error :messages="$errors->updatePassword->get('password')" class="mt-2" />
+        <div class="form-group">
+            <label for="update_password_password">Новый пароль</label>
+            <input id="update_password_password" name="password" type="password" autocomplete="new-password">
+            @foreach ($errors->updatePassword->get('password') as $message)
+                <small class="help" style="color: #b91c1c;">{{ $message }}</small>
+            @endforeach
         </div>
 
-        <div>
-            <x-input-label for="update_password_password_confirmation" :value="__('Confirm Password')" />
-            <x-text-input id="update_password_password_confirmation" name="password_confirmation" type="password" class="mt-1 block w-full" autocomplete="new-password" />
-            <x-input-error :messages="$errors->updatePassword->get('password_confirmation')" class="mt-2" />
+        <div class="form-group">
+            <label for="update_password_password_confirmation">Подтверждение нового пароля</label>
+            <input id="update_password_password_confirmation" name="password_confirmation" type="password" autocomplete="new-password">
+            @foreach ($errors->updatePassword->get('password_confirmation') as $message)
+                <small class="help" style="color: #b91c1c;">{{ $message }}</small>
+            @endforeach
         </div>
 
-        <div class="flex items-center gap-4">
-            <x-primary-button>{{ __('Save') }}</x-primary-button>
-
+        <div class="actions-row">
+            <button class="btn btn-primary" type="submit">Сохранить пароль</button>
             @if (session('status') === 'password-updated')
-                <p
-                    x-data="{ show: true }"
-                    x-show="show"
-                    x-transition
-                    x-init="setTimeout(() => show = false, 2000)"
-                    class="text-sm text-gray-600 dark:text-gray-400"
-                >{{ __('Saved.') }}</p>
+                <span class="muted">Сохранено</span>
             @endif
         </div>
     </form>
